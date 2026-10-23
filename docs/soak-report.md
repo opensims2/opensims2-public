@@ -1,3 +1,81 @@
+# Soak report (round 20, o subconjunto com o índice da instalação)
+
+Rodada curta (23/10) para conferir as mudanças da véspera — o `autonomy` passando a
+indexar a **instalação** inteira (como o app), as chamadas **54–84** da Generic Sims Call,
+o **tipo 13** do Set to Next e o `notifyRoomChanges` por conjunto —: 4 lotes, **1 dia de
+jogo** cada (43.200 ticks, `--every 1800`, `--name-babies`, `S2PKG_ERRORS=1`), com
+`OS2_DATA=...\Apartment Life` (o índice pega todos os packs). Não é a rodada dos 69 lotes:
+é a verificação de regressão destas mudanças, e o que ela deixa aberto está no fim.
+
+| Lote | Resets / orçamento | Detalhe |
+|---|---|---|
+| N001_Lot11 | 106 / 0 | 21 "no stack object" (Run Tree by Name), 20 "attribute 8 of 8" (o controlador do assistente social), 11 "stack object 0 does not exist", 5 break points; os Sims agem (17/94/25 buscas) |
+| N001_Lot68 | 103 / 20 | 30 "Snap Into" no carro da empregada (`Car - MaidMobile - 0,8`, "Sub - Create Driver"), 20 orçamento no **gambá** do AL (0x7FFC7F75), 20 "attribute 8 of 8", 20 "no stack object"; os Sims agem (76/47/39/63 buscas) |
+| N002_Lot10 | 111 / 0 | break points (6x cada), 20 "attribute 8 of 8", 20 "no stack object"; os Sims agem (61/78/52/12 buscas) |
+| E001_Lot127 | **0 / 0** | o prédio de apartamentos do AL roda um dia inteiro limpo |
+
+Nenhum crash e nenhum hang. O `bhav-sweep` do AL fica **igual** (14.093.824 / 23.864 true
+/ 6.385 falhas) e o do base também (7.234.312 / 11.107 / 2.461); build + ctest 39/39.
+
+**Cuidado ao comparar com os dados do base**: um lote com objetos de EP (o 68 tem os
+controladores do Seasons, do AL) rodado só com o `Double Deluxe\Base` acusa "Invalid
+constant" neles (as BCONs do EP não estão lá) — a comparação válida é com a instalação
+inteira (o que o `autonomy` passou a indexar em 22/10, `b720d14`).
+
+**O que a rodada deixa aberto** (âncoras para a próxima):
+
+- o **gambá** (`NPC - Unique - Skunk`, grupo 0x7FFC7F75) gasta o orçamento de 100.000 em
+  "Skunk - Wander Like An Idiot" e "Find Something To Eat": a árvore anda pelos objetos
+  **não-pessoa** com `Set to Next 2` (alvo = o stack object, dono 0x0A) e testa o dado 29
+  (sala) em 0 (instruções 2/3 e 22/23); o laço não termina no port — ver o `Set to Next 2`
+  com esse alvo num lote com muitos objetos fora de sala (o 68).
+- o **carro da empregada** (`Car - MaidMobile - 0,8`): "Sub - Create Driver"
+  (`0x7F793929/0x101D`) falha no **`Snap Into` #4** com o stack object 0. A cadeia: #10 põe o
+  stack object em "o objeto no meu slot 0" (dono 0x14), que está vazio → #16 (global 0x14B)
+  → #8 (global 0x185 "NPC - Create OOW - ID in T[0]") → #9 (`stack object := temp 0`) → #3
+  (`my attribute 0 := o stack object`) → #4. O `OS2_TRACE_NAMED=1` (novo, mostra grupo e
+  instância) mostra o global 0x185 chamando "CT - Generate NPC From Pool"
+  (`0x7FB55274:0x1008`), que despacha por uma **constante** (dono 0x1A, tabela 50 do global,
+  entradas 43/54/55/68/76) e cai no privado **"NPC - Create Out Of World - ID in T[0]"**
+  (`0x1019`): esse mexe no inventário do pool (Manage Inventory, o token `0x4CB4FDC6`), cria
+  o NPC e na **#28 (`temp 0 := o stack object`)** é que o ID iria para o temp 0. No port o
+  caminho termina na **#18 com `false`** (a árvore volta false) e o stack object segue 0 —
+  o NPC não é criado. O `OS2_TRACE_INV=1` (novo, mostra cada Manage Inventory) mostra que a
+  árvore **não chega** ao `Manage Inventory` do token do pool (`kind 3`, `op 0`, GUID
+  `0x4CB4FDC6`): as únicas chamadas do run são `kind 1`/`op 3, 6, 7` no GUID `0x4CB2BCF7`.
+  Então o `false` vem antes (a cadeia `#0..#35`, a `#10 param 0 == 1`, e o despacho do pool
+  pelas constantes do dono 0x1A, tabela 50 do global). Próximo passo: a instrução exata (o
+  `--trace` do `autonomy` só cobre Sim) e o que `#1009`/`#100C` do pool devolvem. São 30
+  reinícios das peças do carro em ~1 minuto às 07:16. **A causa raiz é o `0x7E`** (ver
+  `data-findings.md` §21): "Array - Fill With Valid NPCs" pergunta "NPC - Is Type?"
+  (`0x3AD`, uma instrução só, o `0x7E`) e com a recusa **nenhum** NPC é do tipo — o array
+  fica vazio, a árvore volta `false` e o pool não cria o motorista. Fechar isso é o
+  interpretador de Lua + a API dos scripts (`.objLua`), a maior peça que resta do AL.
+- **"attribute 8 of 8"** (assistente social) e **"stack object attribute 10 of 9"**
+  (telefone): contagens de atributos **menores** no estado do que as árvores do AL leem. O
+  `cTSObject::Read` adota a contagem salva (o port faz `assign`); falta um save do jogo
+  nunca tocado para separar "o jogo cresce o array" (bug do port) de "estado do lote".
+
+# Soak report (round 19, o pacote de lote vazio)
+
+O item 8: o `N002_Lot32` (o stub de 96 bytes, sem nenhum recurso) deixava de
+ser um erro de carga. `Lot::load` agora distingue o pacote vazio
+(`EmptyLotPackage`, em `formats/lot.hpp`) do erro "no elevation array", e o
+`tools/soak.sh` conta os lotes vazios à parte (`empty|autonomy|...`,
+`empty|lot-save|...`), sem os transformer em `error|`.
+
+Rodada só do lote afetado (`tools/soak.sh --one N002_Lot32`, `SOAK_TICKS=1800`,
+`SOAK_NO_APP=1`):
+
+| Lot | Category | Where | Detail |
+|---|---|---|---|
+| N002_Lot32 | empty | autonomy | empty lot package: the lot package has no resources (the empty lot stub) |
+| N002_Lot32 | empty | lot-save | empty lot package: the lot package has no resources (the empty lot stub) |
+
+A linha "Load errors | 1 (N002_Lot32)" das rodadas 18 e anteriores é o histórico
+de antes da mudança; a rodada completa dos 69 lotes (que a repete) fica para a
+próxima rodada do soak.
+
 # Soak report (round 18, visitors' side effects)
 
 Runs of `tools/soak.sh` over the 69 lots (3 game days), headless (`SOAK_NO_APP=1`), 2 lots at a time, seeded (`OS2_SEED=1` and `2`), `S2PKG_FIRES=1`, `SOAK_KEEP_LOGS=1`. **Before** is main 3bcfe516 (r17-loops merged: the same numbers as its "after"); **after** is the `r18-visitfx` branch. Counts from the kept autonomy logs; "fire outbreaks" counts fires started while none burned.

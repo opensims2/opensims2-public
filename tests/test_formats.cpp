@@ -317,6 +317,105 @@ static void testInteractionTable() {
           "TTAB with zero padding before the name");
 }
 
+static void testInteractionTableVersions() {
+    // 0x4F..0x51 keep the 0x4E entry layout byte for byte: the AL content has
+    // 276 of them (149/106/21) and all parse to the trailing name with the
+    // same fields (docs/data-findings.md section 17). 0x53 keeps that layout
+    // with 11 motive tables instead of 7 and its 7 AL resources close to the
+    // trailing name too (section 19). 0x52 never shows up in the UC content
+    // and nothing above 0x55 does, so both are refused.
+    auto table = [](uint32_t version) {
+        std::vector<uint8_t> d(64, 0);
+        auto u16 = [&](uint32_t v) { d.insert(d.end(), {uint8_t(v), uint8_t(v >> 8)}); };
+        auto u32 = [&](uint32_t v) { u16(v & 0xFFFF), u16(v >> 16); };
+        u32(0x54544142), u32(version), u32(0), u16(1);
+        u16(0x1002), u16(0x1003); // action, guard
+        // 0x53 has 11 motive tables, the older versions 7; the first one holds
+        // two advertisements.
+        u32(2);
+        for (uint32_t i = 1; i < (version == 0x53 ? 11u : 7u); ++i)
+            u32(0);
+        u16(0x0001), u16(0x8000);        // flags, flags2
+        u32(7), u32(1), u32(0x40000000); // string index, attenuation code/value 2.0
+        u32(50), u32(0xFFFFFFFF);        // autonomy, join index
+        u16(3), u32(0), u32(0x3F000000), u32(0), u32(1); // 0x45/0x46/0x4A/0x4C fields
+        u16(10), u16(2), u16(1);                          // advertisements: min, delta, personality
+        u16(20), u16(3), u16(2);
+        const std::string name = "Version Layout Table";
+        d.push_back(uint8_t(name.size()));
+        d.insert(d.end(), name.begin(), name.end());
+        return d;
+    };
+    for (uint32_t v : {0x4E, 0x4F, 0x50, 0x51, 0x53}) {
+        const auto t = InteractionTable::parse(table(v));
+        const auto& e = t.interactions.at(0);
+        check(t.version == v && t.interactions.size() == 1, "TTAB version from 0x4E to 0x53 accepted");
+        check(e.action == 0x1002 && e.guard == 0x1003 && e.autonomy == 50 && e.joinIndex == -1 &&
+                  e.uiDisplayType == 3 && e.memoryMultiplier == 0.5f && e.modelTableId == 1,
+              "TTAB 0x4E..0x53 entries share the layout");
+        const size_t tables = v == 0x53 ? 11 : 7;
+        check(e.motives.size() == tables && e.motives[0].size() == 2 && e.motives[0][1].minimum == 20 &&
+                  e.motives[0][1].delta == 3 && e.motives[0][1].personality == 2,
+              "TTAB 0x4E..0x53 advertisements");
+        check(t.name == "Version Layout Table", "TTAB 0x4E..0x53 trailing name");
+    }
+    for (uint32_t v : {0x52, 0x56}) {
+        bool threw = false;
+        try {
+            InteractionTable::parse(table(v));
+        } catch (const FormatError&) {
+            threw = true;
+        }
+        check(threw, "TTAB 0x52 and above 0x55 are refused");
+    }
+
+    // 0x54 and 0x55 changed the entry again: 46 fixed bytes (the counts of
+    // the 0x4E layout are gone) and then two arrays of advertisement groups.
+    // The first group of each array is a count of advertisements; the second
+    // array's group starts with a count of 4-byte items that are still
+    // unknown, then its own count of advertisements.
+    auto table54 = [](uint32_t version) {
+        std::vector<uint8_t> d(64, 0);
+        auto u16 = [&](uint32_t v) { d.insert(d.end(), {uint8_t(v), uint8_t(v >> 8)}); };
+        auto u32 = [&](uint32_t v) { u16(v & 0xFFFF), u16(v >> 16); };
+        auto i16 = [&](int32_t v) { u16(uint16_t(v)); };
+        u32(0x54544142), u32(version), u32(0), u16(1);
+        u16(0x1002), u16(0x1003);                 // action, guard
+        u16(0x0001), u16(0x8000);                 // flags, flags2
+        u32(7), u32(1), u32(0x40000000);          // string index, attenuation code/value 2.0
+        u32(50), u32(0xFFFFFFFF);                 // autonomy, join index
+        u16(3), u32(0), u32(0x3F000000), u32(0), u32(1); // ui, facial, memory, object, model
+        u32(1);                                   // first array: one group
+        u32(2);                                   // with two advertisements
+        i16(10), i16(2), u16(1);
+        i16(20), i16(3), u16(2);
+        u32(1);                                   // second array: one group
+        u32(3);                                   // with three 4-byte items (two unknown, skipped)
+        u32(0xDEADBEEF), u32(0x12345678);
+        u32(1);                                   // and one advertisement
+        i16(30), i16(4), u16(3);
+        const std::string name = "Version Layout Table";
+        d.push_back(uint8_t(name.size()));
+        d.insert(d.end(), name.begin(), name.end());
+        return d;
+    };
+    for (uint32_t v : {0x54, 0x55}) {
+        const auto t = InteractionTable::parse(table54(v));
+        const auto& e = t.interactions.at(0);
+        check(t.version == v && t.interactions.size() == 1, "TTAB 0x54 and 0x55 accepted");
+        check(e.action == 0x1002 && e.guard == 0x1003 && e.autonomy == 50 && e.joinIndex == -1 &&
+                  e.uiDisplayType == 3 && e.memoryMultiplier == 0.5f && e.modelTableId == 1,
+              "TTAB 0x54..0x55 entries keep the 0x4E fields");
+        check(e.motives.size() == 2 && e.motives[0].size() == 2 && e.motives[0][1].minimum == 20 &&
+                  e.motives[0][1].delta == 3 && e.motives[0][1].personality == 2,
+              "TTAB 0x54..0x55 first array of advertisement groups");
+        check(e.motives[1].size() == 1 && e.motives[1][0].minimum == 30 && e.motives[1][0].delta == 4 &&
+                  e.motives[1][0].personality == 3,
+              "TTAB 0x54..0x55 second array of advertisement groups");
+        check(t.name == "Version Layout Table", "TTAB 0x54..0x55 trailing name");
+    }
+}
+
 static void testBhav() {
     std::vector<uint8_t> d(64, 0);
     d.insert(d.end(), {0x07, 0x80, 2, 0, 0, 1, 2, 0, 0, 0, 0, 0}); // 0x8007, 2 instructions, 1 arg, 2 locals
@@ -342,6 +441,21 @@ static void testBhav() {
         threw = true;
     }
     check(threw, "BHAV rejects out-of-range branches");
+
+    // 0x8009 (Apartment Life and later) adds one header byte after the tree
+    // version: 0 in 28,988 of the AL package's 29,014 trees. Same tree parses.
+    std::vector<uint8_t> e(64, 0);
+    e.insert(e.end(), {0x09, 0x80, 2, 0, 0, 1, 2, 0, 0x0A, 0x80, 0xFF, 0xFF, 0x00});
+    auto push = [&](uint16_t op, uint16_t t, uint16_t f) {
+        e.insert(e.end(), {uint8_t(op), uint8_t(op >> 8), uint8_t(t), uint8_t(t >> 8), uint8_t(f), uint8_t(f >> 8), 0});
+        e.insert(e.end(), 16, 0);
+    };
+    push(0x0002, 1, 0xFFFE);      // Expression: true -> 1, false -> return false
+    push(0x2010, 0xFFFD, 0xFFFC); // semi-global call: true -> return true, false -> error
+    const auto b9 = Behavior::parse(e);
+    check(b9.instructions.size() == 2 && b9.instructions[0].onTrue.index == 1 &&
+              b9.instructions[1].onFalse.kind == Behavior::TargetKind::Error && (b9.treeVersion & 0xFFFF) == 0x800A,
+          "BHAV 0x8009 header byte");
 }
 
 static void testCameraConfig() {
@@ -2495,6 +2609,29 @@ static void testObjectShadow() {
     check(guobsOn(info.present, true, S | N, w) == ((1 << kGuobGround) | N), "only the planes the model has");
 }
 
+// The empty lot package: the 96-byte stub the game writes for a lot with
+// nothing in it (N002_Lot32 in the base game's N002). The game loads it as a
+// lot; ours says so apart from the load errors.
+static void testEmptyLotPackage() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "os2_test_empty_lot";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    DbpfWriter w;
+    w.save(dir / "empty.package");
+    DbpfPackage pkg(dir / "empty.package");
+    check(pkg.entries().empty(), "empty lot package: the stub has no resources");
+    bool empty = false;
+    try {
+        Lot::load(pkg);
+    } catch (const EmptyLotPackage&) {
+        empty = true;
+    } catch (const std::exception&) {
+    }
+    check(empty, "empty lot package: not a load error");
+    fs::remove_all(dir);
+}
+
 int main() {
     testObjectShadow();
     testLogOnce();
@@ -2510,6 +2647,7 @@ int main() {
     testBhav();
     testInteractionTable();
     testSlotVersions();
+    testInteractionTableVersions();
     testCameraConfig();
     testLightingConfig();
     testStandardMaterial();
@@ -2519,6 +2657,7 @@ int main() {
     testFloorThickness();
     testFencePieces();
     testDeckFoundationMarkers();
+    testEmptyLotPackage();
     testLotLightMap();
     testLotWater();
     testGameRoofs();

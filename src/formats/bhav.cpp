@@ -86,6 +86,14 @@ Behavior Behavior::parse(std::span<const uint8_t> data) {
     b.localCount = r.u8();
     b.flags = r.u8();
     b.treeVersion = r.u32();
+    // 0x8009 (Apartment Life and the packs after it) adds one header byte
+    // after the tree version: 0 in 28,988 of the 29,014 trees in the AL
+    // objects.package, and only ever non-zero when the header flags have bit
+    // 0x10 set (0x01/0x07/0x08/0x0C there). The meaning is unknown and the VM
+    // does not read it. Skipped, the instructions line up and every target
+    // lands (checked over all 29,014 in the package).
+    if (b.signature >= 0x8009)
+        r.u8();
 
     const bool wideTargets = b.signature >= 0x8007;
     const bool hasNodeVersion = b.signature >= 0x8005;

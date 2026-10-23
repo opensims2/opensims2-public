@@ -278,42 +278,97 @@ InteractionTable InteractionTable::parse(std::span<const uint8_t> data) {
     }
     t.typeCode = r.i32();
     t.version = r.u32();
-    if (t.version < 0x3F || t.version > 0x4E)
+    // 0x4F..0x51 keep the 0x4E layout byte for byte: the 276 resources the
+    // game refuses in the AL objects.package (149 + 106 + 21) all parse to the
+    // trailing name with the same entry layout. 0x53 keeps the same layout too,
+    // with 11 motive tables instead of 7: the reader selects 7 for 0x44..0x52
+    // and 11 for 0x53 (FUN_0087c720 @ 0x87c880 in the PC binary) and the 7 AL
+    // resources (all "untitled tree table") close to the trailing name with the
+    // 11 counts, the fields and the advertisements in the 0x4E order
+    // (docs/data-findings.md section 19). 0x52 never shows up in the UC content
+    // and nothing above 0x55 does, so both stay refused. 0x54 and 0x55 changed
+    // the entry again: 46 fixed bytes and then two arrays of advertisement
+    // groups (docs/data-findings.md sections 17 and 18).
+    const uint32_t v = t.version;
+    if (v < 0x3F || v == 0x52 || v > 0x55)
         throw FormatError("TTAB: unsupported version " + hexString(t.version));
     t.unused = r.u32();
     t.interactions.resize(r.u16());
-    const uint32_t v = t.version;
-    for (auto& it : t.interactions) {
-        it.action = r.u16();
-        it.guard = r.u16();
-        std::vector<uint32_t> counts(v < 0x44 ? 1 : 7);
-        for (auto& c : counts)
-            c = count(r, "TTAB motive");
-        it.flags = r.u16();
-        it.flags2 = r.u16();
-        it.stringIndex = r.u32();
-        it.attenuationCode = r.u32();
-        it.attenuationValue = r.f32();
-        it.autonomy = r.u32();
-        it.joinIndex = r.i32();
-        if (v >= 0x45)
+    if (v <= 0x53) {
+        for (auto& it : t.interactions) {
+            it.action = r.u16();
+            it.guard = r.u16();
+            // 0x53 is the 0x4E layout with 11 motive tables (the PC reader's
+            // count: 7 up to 0x52, 11 at 0x53, none from 0x54 on).
+            std::vector<uint32_t> counts(v < 0x44 ? 1 : v == 0x53 ? 11 : 7);
+            for (auto& c : counts)
+                c = count(r, "TTAB motive");
+            it.flags = r.u16();
+            it.flags2 = r.u16();
+            it.stringIndex = r.u32();
+            it.attenuationCode = r.u32();
+            it.attenuationValue = r.f32();
+            it.autonomy = r.u32();
+            it.joinIndex = r.i32();
+            if (v >= 0x45)
+                it.uiDisplayType = r.u16();
+            if (v >= 0x46)
+                it.facialAnimation = r.u32();
+            if (v >= 0x4A)
+                it.memoryMultiplier = r.f32();
+            if (v >= 0x4C) {
+                it.objectType = r.u32();
+                it.modelTableId = r.u32();
+            }
+            for (auto c : counts) {
+                std::vector<Advertisement> table(c);
+                for (auto& a : table) {
+                    a.minimum = r.i16();
+                    a.delta = r.i16();
+                    a.personality = r.u16();
+                }
+                it.motives.push_back(std::move(table));
+            }
+        }
+    } else {
+        // 0x54+: the entry has no motive counts in its fixed part; the
+        // advertisements come in two arrays of groups instead. The first group
+        // is a count and the advertisements; the second one carries a count of
+        // 4-byte items (whose content is still unknown) before its own count
+        // and advertisements. Both arrays are read as one motive table per
+        // group, in file order.
+        for (auto& it : t.interactions) {
+            it.action = r.u16();
+            it.guard = r.u16();
+            it.flags = r.u16();
+            it.flags2 = r.u16();
+            it.stringIndex = r.u32();
+            it.attenuationCode = r.u32();
+            it.attenuationValue = r.f32();
+            it.autonomy = r.u32();
+            it.joinIndex = r.i32();
             it.uiDisplayType = r.u16();
-        if (v >= 0x46)
             it.facialAnimation = r.u32();
-        if (v >= 0x4A)
             it.memoryMultiplier = r.f32();
-        if (v >= 0x4C) {
             it.objectType = r.u32();
             it.modelTableId = r.u32();
-        }
-        for (auto c : counts) {
-            std::vector<Advertisement> table(c);
-            for (auto& a : table) {
-                a.minimum = r.i16();
-                a.delta = r.i16();
-                a.personality = r.u16();
+            for (int array = 0; array < 2; ++array) {
+                const uint32_t groups = count(r, "TTAB group");
+                for (uint32_t g = 0; g < groups; ++g) {
+                    if (array == 1) {
+                        const uint32_t items = count(r, "TTAB item");
+                        for (uint32_t i = 1; i < items; ++i)
+                            r.bytes(4); // unknown 4-byte item, skipped
+                    }
+                    std::vector<Advertisement> table(count(r, "TTAB advertisement"));
+                    for (auto& a : table) {
+                        a.minimum = r.i16();
+                        a.delta = r.i16();
+                        a.personality = r.u16();
+                    }
+                    it.motives.push_back(std::move(table));
+                }
             }
-            it.motives.push_back(std::move(table));
         }
     }
     if (!r.atEnd()) {

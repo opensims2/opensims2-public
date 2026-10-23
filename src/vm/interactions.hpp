@@ -58,6 +58,10 @@ constexpr int16_t CurrentInteractionObject = 80;
 constexpr int16_t CurrentRunningInteractionIndex = 102;
 constexpr int16_t CurrentRunningObject = 103;
 constexpr int16_t InteractionAutonomous = 166;
+// The species: only Bon Voyage has the field, so the base game's Sims read
+// 0 (the human); the Set to Next types 40-45 and 46-51 pick one each
+// (docs/primitives-mac.md §0x1F).
+constexpr int16_t Species = 186;
 // The sub-queue (STR# 0xC8 labels).
 constexpr int16_t SubQueueCount = 26;
 constexpr int16_t SubQueueMasterObject = 75;

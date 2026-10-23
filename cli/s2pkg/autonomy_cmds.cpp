@@ -4,6 +4,7 @@
 
 #include "autonomy_cmds.hpp"
 #include "budget.hpp"
+#include "data_index.hpp"
 
 #include "formats/bhav.hpp"
 #include "formats/binreader.hpp"
@@ -123,7 +124,15 @@ void printRelationships(vm::VM& machine, const std::vector<vm::ObjectId>& sims, 
 int cmdAutonomy(const std::filesystem::path& lotFile, long ticks, long every, const std::string& simQuery,
                 std::optional<int> motives, bool fromInit, bool verbose, bool noDecay, int traceId, size_t traceDepth,
                 size_t fbaDump, int fbaSim, const std::string& fbaFilter) {
-    ResourceIndex index(resRoot(lotFile));
+    // The whole installation's Res trees, as the app indexes them
+    // (src/app/win_main.cpp, cli/s2pkg/data_index.hpp): the folder `resRoot`
+    // finds first and the packs beside it. With a single root the Episode's
+    // content ran without the base game's (the AL pack alone lacks its
+    // animations: "a-heatstroke-..." and even "o-door-open-CCW" were missing,
+    // and wait loops that rely on an animation's length spun into the
+    // instruction budget).
+    ResourceIndex index;
+    s2pkgAddInstallation(index, resRoot(lotFile));
     vm::CodeLibrary code(&index);
     DbpfPackage pkg(lotFile);
     const Lot lot = Lot::load(pkg);

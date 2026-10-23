@@ -62,6 +62,17 @@ endif()
 
 add_library(os2_port src/port/process.cpp src/port/files.cpp)
 target_include_directories(os2_port PUBLIC src)
+
+# Lua 5.0.3 (MIT, third_party/lua50/COPYRIGHT): the game's ObjectScripts are
+# Lua 5.0 bytecode (docs/lua-scripts.md); the 0x7E (Run Script) runs them.
+file(GLOB OS2_LUA50_SRC third_party/lua50/src/*.c third_party/lua50/src/lib/*.c)
+add_library(os2_lua50 STATIC ${OS2_LUA50_SRC})
+target_include_directories(os2_lua50 PUBLIC third_party/lua50/src third_party/lua50/include)
+if(MSVC)
+  # Lua 5.0 is C89; MSVC warns about the C runtime's "unsafe" functions it uses.
+  target_compile_definitions(os2_lua50 PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(os2_lua50 PRIVATE /W0)
+endif()
 os2_warnings(os2_port)
 
 add_library(os2_formats
@@ -71,6 +82,7 @@ add_library(os2_formats
   src/formats/audio.cpp
   src/formats/audio_spx.cpp
   src/formats/bhav.cpp
+  src/formats/lua50.cpp
   src/formats/camera_config.cpp
   src/formats/cas_catalog.cpp
   src/formats/cas_face.cpp
@@ -190,6 +202,7 @@ add_library(os2_vm
   src/vm/person_prims.cpp
   src/vm/placement.cpp
   src/vm/primitives.cpp
+  src/vm/lua_scripts.cpp
   src/vm/queue.cpp
   src/vm/reach.cpp
   src/vm/routing.cpp
@@ -206,7 +219,7 @@ add_library(os2_vm
 )
 target_include_directories(os2_vm PUBLIC src)
 os2_warnings(os2_vm)
-target_link_libraries(os2_vm PUBLIC os2_formats)
+target_link_libraries(os2_vm PUBLIC os2_formats PRIVATE os2_lua50)
 # vm/routing.cpp and vm/build_edit.cpp split by area (round 26, docs/ideias/DEBITOS-TECNICOS.md 1.2).
 target_sources(os2_vm PRIVATE src/vm/routing_plan.cpp src/vm/routing_loco.cpp src/vm/routing_walk.cpp src/vm/build_edit_walls.cpp src/vm/build_edit_ground.cpp src/vm/build_edit_stairs.cpp src/vm/build_edit_fireplace.cpp)
 # The environment motive, cTSEnvironmentScoreManager (round n33).
@@ -239,7 +252,7 @@ target_include_directories(os2_fx PUBLIC src)
 os2_warnings(os2_fx)
 target_link_libraries(os2_fx PUBLIC os2_formats)
 
-add_executable(s2pkg cli/s2pkg/main.cpp cli/s2pkg/describe.cpp cli/s2pkg/anim_cmds.cpp cli/s2pkg/material_cmds.cpp cli/s2pkg/audio_cmds.cpp cli/s2pkg/movie_cmds.cpp cli/s2pkg/ui_cmds.cpp cli/s2pkg/hood_cmds.cpp cli/s2pkg/hood_play_cmds.cpp cli/s2pkg/prim_cmds.cpp cli/s2pkg/pie_cmds.cpp cli/s2pkg/state_cmds.cpp cli/s2pkg/save_cmds.cpp cli/s2pkg/autonomy_cmds.cpp cli/s2pkg/wants_cmds.cpp cli/s2pkg/route_cmds.cpp cli/s2pkg/buy_cmds.cpp cli/s2pkg/build_cmds.cpp cli/s2pkg/effects_cmds.cpp cli/s2pkg/simlook_cmds.cpp cli/s2pkg/cas_cmds.cpp cli/s2pkg/tutorial_cmds.cpp src/app/game_save.cpp)
+add_executable(s2pkg cli/s2pkg/main.cpp cli/s2pkg/describe.cpp cli/s2pkg/anim_cmds.cpp cli/s2pkg/material_cmds.cpp cli/s2pkg/audio_cmds.cpp cli/s2pkg/movie_cmds.cpp cli/s2pkg/ui_cmds.cpp cli/s2pkg/hood_cmds.cpp cli/s2pkg/hood_play_cmds.cpp cli/s2pkg/prim_cmds.cpp cli/s2pkg/pie_cmds.cpp cli/s2pkg/state_cmds.cpp cli/s2pkg/save_cmds.cpp cli/s2pkg/autonomy_cmds.cpp cli/s2pkg/wants_cmds.cpp cli/s2pkg/route_cmds.cpp cli/s2pkg/buy_cmds.cpp cli/s2pkg/build_cmds.cpp cli/s2pkg/effects_cmds.cpp cli/s2pkg/simlook_cmds.cpp cli/s2pkg/cas_cmds.cpp cli/s2pkg/tutorial_cmds.cpp cli/s2pkg/script_cmds.cpp src/app/game_save.cpp)
 target_sources(s2pkg PRIVATE cli/s2pkg/shadow_cmds.cpp)
 target_include_directories(s2pkg PRIVATE cli/s2pkg)
 target_link_libraries(s2pkg PRIVATE os2_vm os2_audio os2_fx os2_port)
@@ -558,6 +571,9 @@ add_test(NAME tv_program COMMAND test_tv_program)
 # The compat <simd/simd.h> (src/port/compat) off Apple; Apple's own vector
 # types have no simd_float4(...) constructor, so the check is not built there.
 if(NOT APPLE OR OS2_WINDOWS_CHECK)
+  add_executable(test_lua50 tests/test_lua50.cpp)
+  target_link_libraries(test_lua50 PRIVATE os2_lua50)
+  add_test(NAME lua50 COMMAND test_lua50)
   add_executable(test_simd tests/test_simd.cpp)
   target_include_directories(test_simd PRIVATE src)
   add_test(NAME simd COMMAND test_simd)

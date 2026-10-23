@@ -22,15 +22,48 @@
 //   24 uses), same level only; clear → temp 0 = target, true; blocked →
 //   temp 0 = -1, false (inferred approximation). Mode 1 traces along the
 //   object's way and is taken as clear (temp 0 = 0, true; inferred); other
-//   modes are false, as in the binary.
+//   modes are false, as in the binary. The points are the slots of the kind
+//   (the Look At's byte 14 convention: 1/2/3 = the SLOT entries of type
+//   4/3/0, the index inside them; past the count, error 0x1B), like the
+//   binary; with no kind, the middle of the object's box (ours: the tile it
+//   stands on).
 
 #include "engine.hpp"
 #include "errors.hpp"
 #include "vm.hpp"
 
+#include <cmath>
+
 namespace os2::vm {
 
 namespace {
+
+// The tile a ray starts from or ends at: the slot of the kind (1/2/3 = the
+// SLOT entries of type 4/3/0, the index inside them; past the count, error
+// 0x1B), or the object's own tile when it has no kind.
+TilePos rayPoint(Context& c, const Object& x, uint8_t kind, uint8_t index) {
+    if (kind < 1 || kind > 3)
+        return VM::tileOf(x);
+    const uint16_t type = kind == 1 ? 4 : kind == 2 ? 3 : 0;
+    size_t count = 0;
+    float ox = 0, oy = 0;
+    bool found = false;
+    if (x.definition)
+        if (const auto* t = c.vm.code().slots(x.group, x.definition->slotId()))
+            for (const auto& s : t->slots)
+                if (s.type == type && count++ == index) {
+                    ox = s.offset[0];
+                    oy = s.offset[1];
+                    found = true;
+                    break;
+                }
+    if (!found)
+        throw gameError(err::SlotOutOfRange,
+                        "slot " + std::to_string(index) + " of object " + std::to_string(x.id));
+    // The slot's offset is in tiles (the SLOT reader scales it); the level is
+    // the object's own (the third component is a height).
+    return {int(std::floor(x.position.x + ox)), int(std::floor(x.position.y + oy)), x.position.level};
+}
 
 Exit age(Context& c) {
     Object& me = c.me();
@@ -70,9 +103,13 @@ Exit rayTrace(Context& c) {
     const Object* to = c.vm.object(c.get(o[8], int16_t(o[9] | o[10] << 8)));
     if (!to)
         throw gameError(err::NoObject, "RayTrace: target object");
-    bool clear = from->position.level == to->position.level;
+    // The points: the slot of the kind (the Look At's byte 14 convention) of
+    // the source and of the target.
+    const TilePos a = rayPoint(c, *from, o[4], o[5]);
+    const TilePos b = rayPoint(c, *to, o[11], o[12]);
+    bool clear = a.level == b.level;
     if (clear && c.vm.world && from->position.inWorld() && to->position.inWorld())
-        clear = c.vm.world->lineOfSight(VM::tileOf(*from), VM::tileOf(*to));
+        clear = c.vm.world->lineOfSight(a, b);
     c.thread.temps[0] = clear ? to->id : int16_t(-1);
     return clear ? Exit::True : Exit::False;
 }

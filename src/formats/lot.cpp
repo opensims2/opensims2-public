@@ -165,6 +165,11 @@ const std::array<uint16_t, 4>& Lot::floor(int level, uint32_t x, uint32_t y) con
 Lot Lot::load(DbpfPackage& pkg) {
     Lot lot;
 
+    // The empty lot package (the 96-byte stub with no resources): the game
+    // loads it as a lot with nothing in it, so it is not a load error.
+    if (pkg.entries().empty())
+        throw EmptyLotPackage("the lot package has no resources (the empty lot stub)");
+
     // Wall graph first: it holds the lowest level. Of its instances (walls
     // flagged for light blocking, load bearing, ...) the largest lists all of them.
     struct Graph {

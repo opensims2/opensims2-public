@@ -216,7 +216,7 @@ private:
     // Catalog browsing (cTSWinProcBuyPanel).
     Sort sort_ = Sort::Function;
     int function_ = -1; // function sort bit chosen (-1: the category buttons)
-    int subSort_ = 0;   // subsort bits (0: all)
+    int subSort_ = -1;  // subsort bits (-1: nothing pressed yet, 0: all)
     int room_ = -1;     // room sort bit chosen
     int roomFunction_ = 0;
     size_t page_ = 0;

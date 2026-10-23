@@ -13,7 +13,8 @@ namespace os2 {
 // 0x1000-0x1FFF, semi-global 0x2000+) and branches on true/false.
 //
 // Header after the 64-byte name: u16 signature (0x8000-0x8009), u16 count,
-// u8 tree type, u8 argument count, u8 local count, u8 flags, u32 tree version.
+// u8 tree type, u8 argument count, u8 local count, u8 flags, u32 tree version
+// (0x8009 adds one byte after it, skipped).
 // Instruction layout by signature:
 //   < 0x8003: opcode u16, true u8, false u8, 8 operand bytes
 //   0x8003-4: opcode u16, true u8, false u8, 16 operand bytes

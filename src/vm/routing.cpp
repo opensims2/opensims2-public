@@ -160,18 +160,91 @@ std::vector<ObjectId> VM::objectsOnTileWithContents(TilePos t) const {
     return out;
 }
 
+// The tile index: built from the objects in the world on the first query and
+// kept by setPosition/removeObject. OS2_CHECK_TILE_INDEX=1 compares every
+// objectsOnTile with the full scan it replaced.
+static bool checkTileIndex() {
+    static const bool on = std::getenv("OS2_CHECK_TILE_INDEX") != nullptr;
+    return on;
+}
+
+void VM::ensureTileIndex() const {
+    if (tilesBuilt_)
+        return;
+    tilesBuilt_ = true; // before the walk: indexObject reads it
+    for (const Object* o : byId_)
+        if (o)
+            indexObject(*o);
+}
+
+void VM::indexObject(const Object& o) const {
+    if (o.position.inWorld())
+        tiles_[tileOf(o)].push_back(o.id);
+}
+
+void VM::unindexTile(TilePos t, ObjectId id) const {
+    const auto it = tiles_.find(t);
+    if (it == tiles_.end())
+        return;
+    auto& ids = it->second;
+    ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
+    if (ids.empty())
+        tiles_.erase(it);
+}
+
+void VM::unindexObject(const Object& o) const {
+    if (!tilesBuilt_ || !o.position.inWorld())
+        return;
+    unindexTile(tileOf(o), o.id);
+}
+
+void VM::setPosition(Object& o, Position p) {
+    if (!tilesBuilt_) {
+        o.position = p;
+        return;
+    }
+    const bool was = o.position.inWorld();
+    const TilePos old = was ? tileOf(o) : TilePos{};
+    o.position = p;
+    const bool is = p.inWorld();
+    // The walk changes the point, not the tile, most of the time.
+    if (was && is && old == tileOf(o))
+        return;
+    if (was)
+        unindexTile(old, o.id);
+    if (is)
+        indexObject(o);
+}
+
 std::vector<ObjectId> VM::objectsOnTile(TilePos t) const {
+    ensureTileIndex();
     std::vector<ObjectId> out;
-    for (const Object* o : byId_) // by ID, as objects_ is
-        if (o && o->position.inWorld() && o->data[objdata::ContainerId] == 0 && tileOf(*o) == t)
-            out.push_back(o->id);
+    if (const auto it = tiles_.find(t); it != tiles_.end())
+        for (const ObjectId id : it->second)
+            if (const Object* o = size_t(uint16_t(id)) < byId_.size() ? byId_[uint16_t(id)] : nullptr;
+                o && o->position.inWorld() && o->data[objdata::ContainerId] == 0 && tileOf(*o) == t)
+                out.push_back(id);
+    // The scan this replaces walked byId_: ID order.
+    std::sort(out.begin(), out.end());
+    if (checkTileIndex()) {
+        std::vector<ObjectId> want;
+        for (const Object* o : byId_)
+            if (o && o->position.inWorld() && o->data[objdata::ContainerId] == 0 && tileOf(*o) == t)
+                want.push_back(o->id);
+        if (want != out)
+            std::fprintf(stderr, "tile index: %d,%d,%d has %zu objects, the scan %zu\n", t.x, t.y, t.level, out.size(),
+                         want.size());
+    }
     return out;
 }
 
 std::vector<std::vector<ObjectId>> VM::objectsAround(TilePos at, int r) const {
+    // The scan, not the index: the radius of a "nearest X" search is large
+    // (20+ tiles), and walking (2r + 1)^2 buckets costs far more than the
+    // objects. byId_: ID order.
     const int side = 2 * r + 1;
     std::vector<std::vector<ObjectId>> out(size_t(side) * size_t(side));
-    for (const Object* o : byId_) { // by ID, as objects_ is
+    for (const Object* o : byId_) {
         if (!o || !o->position.inWorld() || o->data[objdata::ContainerId] != 0)
             continue;
         const TilePos t = tileOf(*o);

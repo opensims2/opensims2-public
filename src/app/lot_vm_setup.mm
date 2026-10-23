@@ -114,6 +114,20 @@ void startSimulation(os2::Renderer& renderer, os2::ResourceIndex& index, const o
                 return at->apply(os2::Vec3{(b.lo.x + b.hi.x) * 0.5f, (b.lo.y + b.hi.y) * 0.5f, 0.75f * (b.lo.z + b.hi.z)});
         return std::nullopt;
     };
+    // Look At's slot point (byte 14 kinds 1/2/3): the slot's bone by name
+    // (a Sim's drawn bones included) or, without one, its stored offset
+    // through the object's placement (LotSimulation::lookTarget).
+    gSimulation->objectSlotPoint = [](int16_t id, const std::array<float, 3>& offset,
+                                      const std::string& bone) -> std::optional<os2::Vec3> {
+        if (!gObjectView)
+            return std::nullopt;
+        if (!bone.empty())
+            if (const auto w = gObjectView->nodePlacement(id, bone))
+                return os2::Vec3{w->t[0], w->t[1], w->t[2]};
+        if (const auto at = gObjectView->placement(id))
+            return at->apply(os2::Vec3{offset[0], offset[1], offset[2]});
+        return std::nullopt;
+    };
     // TV channels and arcade screens (app/tv_broadcast.hpp): a broadcast's material shows its movies.
     try {
         gTv = std::make_unique<os2::TvBroadcast>(renderer, gameDir() / "TSData/Res");

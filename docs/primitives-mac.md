@@ -23,6 +23,15 @@ do jogo conta a partir de 1: o operando é a entrada **a partir de 0**.
 
 ## 1. Como o jogo guarda e lê os operandos
 
+- **Cabeçalho da árvore**: 64 bytes de nome, u16 assinatura (0x8000–0x8009), u16 nº de
+  instruções, u8 tipo, u8 nº de argumentos, u8 nº de locais, u8 flags, u32 *tree version*.
+  A assinatura **0x8009** (Apartment Life em diante) põe **1 byte a mais** logo depois do
+  *tree version* (0 nas 28.988 das 29.014 árvores 0x8009 do `objects.package` do AL; as 26
+  restantes valem 0x01/0x07/0x08/0x0C e todas têm a flag 0x10 do cabeçalho) — desconhecido,
+  a VM não lê; pulado, todas as 29.014 caem nos alvos (medido na varredura do pacote: alvo
+  < contagem ou ≥ 0xFFFC), sem ele nenhuma cai — e as 0x8007/0x8008 do mesmo pacote só caem
+  sem o byte. Era o que derrubava a carga com as 17 árvores (item 9 do
+  `goal-port-fidelity.md`).
 - **`XPrimParam`** (16 bytes de operandos em `+4`, a "node version" em
   `+0x14`). `XPrimParam::Read` lê a versão de nó (só se o formato do BHAV é
   ≥ 0x8005; senão 0), 8 bytes e mais 8 (formatos < 0x8003 só têm 8: o resto
@@ -123,6 +132,10 @@ erro 0x05. Binário.
 | 0x7C | Want Satisfy | `TryWantSatisfy` |
 | 0x7D | Follow Sim (sem rótulo no editor do base) | `cTSRoutingObjectAggregate::TryFollowSim` — **só BV** |
 | 0x7E | Run Script (Lua) | `TryRunScript` — **só BV** |
+
+No **exe do PC** (o build do AL) as duas existem na **classe base**, ao lado do
+RayTrace (0x78) e do Change Outfit (0x79) — o gate de tipo de objeto é
+"qualquer objeto", não só o routing aggregate (`docs/re-pc-ghidra.md` §(d)).
 
 Sem handler (erro 0x05 se aparecer): 0x04–0x06, 0x09, 0x15, 0x18, 0x26–0x29,
 0x2B, 0x2C, 0x2F, 0x34–0x68. Binário. `FollowSimParam` e `RunScriptParam` não
@@ -458,7 +471,8 @@ Operandos (binário): GUID u32 0; tipo de busca = byte 4 & 0x7F (STR# 0xA4);
 **byte 4 bit 7: alvo explícito** = (dono byte 5, dado **byte 7**) — sem ele o
 alvo é o stack object; local u8 6 (tipos 9 e 0x22); flags u8 8: 0x01 "including
 disabled objects", 0x02 "where" object data (u16 9, rótulo STR# 0x8D) ==
-valor u16 11. A versão de nó 0 não tinha as flags nem o filtro (zerados no
+valor u16 11, 0x04 pula o teste do object data 107 (não impressa pelo
+editor). A versão de nó 0 não tinha as flags nem o filtro (zerados no
 load).
 
 Execução (binário):
@@ -489,6 +503,35 @@ Execução (binário):
 - 5 neighbor ID (e 0x2E–0x33, só BV): o próximo vizinho pelo ID, com o
   mesmo filtro do dado 186 (tipo 5: = 0, só BV); se o vizinho está no lote, o
   objeto dele também passa pelo filtro comum.
+
+**No port (21/10; tipos 38 e 39 em 22/10).** Os tipos de espécie entraram: o dado de pessoa 186 (0 = o
+humano; o jogo base não tem o campo, então os Sims dele leem 0) filtra o tipo 1
+(as pessoas) e o tipo 5 (o ID de vizinho) pelo humano, e os tipos 40–45
+(0x28–0x2D) e 46–51 (0x2E–0x33) pegam uma espécie cada (0 = o humano,
+< 0, 1–2, 1, 2, 3 nas duas listas). Sem o filtro, o tipo 1 no Bon Voyage
+achava os animais também. O tipo 33 (Hauntable, o campo 0x1C da definição)
+também. O censo do AL (`s2pkg prim-usage <Res> 1F`, byte 4) mostra o uso: 40 ×126,
+41 ×56, 46 ×9, 42 ×5, 47 ×3, 45 ×1 (os de espécie) e 38 ×36, 39 ×3, 31 ×9,
+19 ×1, 20 ×1, 13 ×1, 34 ×1; **o 31 (cônjuge do temp 0) e o 34 (o grupo de
+multi-tile vizinho) já estavam implementados**, e os **38/39 entraram em
+22/10** (eram as 39 instruções que faltavam). O **38** percorre a **lista de
+definições do app** (não a do objeto): o elemento é a definição OBJD, os
+campos **75/76** (offsets **0xD6/0xD8**) são a **categoria e a subcategoria do
+seletor** do AL (117 = as rádios, 121 = os badges/tokens, 153 = os acessórios,
+2 = os balcões) e o **GUID** do achado vai para os **temps 2/3**, com o
+**índice + 1** no alvo. O **39** é a busca do próximo **vizinho** com o
+relacionamento **vitalício ≥ 0** com o vizinho do **temp 0** (a tabela dele;
+sem vizinho, erro **0x77**; sem tabela, **0x68**), pulando o próprio e os que
+não têm objeto no lote; o filtro comum vale (morte, `data 56 & 5`,
+`data 107`, o "where") e o port o aplica no `eligible` desde 22/10, gateado
+pelo layout de BV (no nó 0 o dado 56 é o "dry clothes value" e o 107 não
+existe). Medido no AL: o `bhav-sweep` passa de 12.894.204
+instruções, 18.622 true e 14.129 falhas para **12.915.916, 18.712 true e 13.783
+falhas** (as espécies e o 33), e depois para **13.170.043, 19.087 true e 13.200
+falhas** (os 38/39: as 70 buscas de tipo inválido somem); o jogo base fica
+**igual** (7.234.312 / 11.107 / 2.461). `data-findings.md` §22 tem o assembly,
+o censo dos 10.952 OBJDs do AL e a conferência da árvore
+`0x7F067AA0:2003`.
 - 7 vizinho do tipo: próximos vizinhos cuja definição tem o GUID u32 0.
 - 8 objeto no mesmo tile: precisa de alvo ≠ 0 (senão falso); objetos do tile
   do alvo, no mesmo nível, depois dele. O iterador do tile (BV `0xe1e8a8`/
@@ -513,8 +556,22 @@ Execução (binário):
   tile com o tipo 8 entre um e outro, voltava a uma cadeira já vista e
   estourava o orçamento de instruções: `N002_Lot22`).
 - 10 carreira: sempre falso. 11 Lot ID: o próximo lote.
-- 13 pessoa mais perto da pessoa do temp 0: grava a distância e a direção
-  relativa no objeto (lidas pelos temps 4 e 5, pelo rótulo).
+- **13 a pessoa mais perto** (o único uso no base e no AL é "Reaction - Banter",
+  `7F01EC29:20E9`, que a enumera num laço): a âncora é `GetObjectByID(temp 0)` —
+  nula: erro 0x17 — e **tem de ser pessoa** (`QueryInterface` do IID
+  `0x5A69D3D5`, senão erro 0x1C); as candidatas são as pessoas, da mais perto
+  para a mais longe da âncora (a consulta espacial do módulo; aqui a ordem da
+  lista do módulo desempata), cada uma passando pelo filtro comum (morrendo,
+  dados 56/107 e o "where"). O alvo é o **cursor**: a próxima chamada continua
+  na pessoa seguinte, 0 começa na mais perto; a distância vai para o **temp 4**
+  (a mesma de `Get Distance To`: tiles inteiros, 10 por andar) e a direção 0–7
+  para o **temp 5** (a de `Get Direction To`). Evidência: PC
+  `0x9393b2..0x93960d` — a âncora, o filtro em `0x9394f0`, e as conversões
+  `0x00e5c948` (distância) e `0x00c3e7b0` (ângulo) em `0x9395ec..0x93960d`
+  gravando `+0x92`/`+0x94` = temps 4/5. Inferido: a âncora não é candidata (um
+  Sim não papeia consigo) e o caminho do alvo 0 (o binário só grava os temps
+  zerados) começa na mais perto, como o único usuário espera; o detalhe está no
+  `re-pc-ghidra.md` §(e).
 - 14/15 instância do "job object" pelo GUID nos dados de pessoa 89/90 do Sim
   no stack object / do vizinho (vizinho inexistente: erro 0x37).
 - 16 veículo: a lista de veículos do lote (o GUID não é usado — confirma o
@@ -3771,9 +3828,18 @@ antes os donos 0x0C, 0x12, 0x1C, 0x1D e 0x1E.
   Array"); elemento fora (iterador ou temp 0, donos 0x2B–0x2E) → **erro
   0x6D**. O `Read` mantém a contagem da definição (arrays salvos a mais
   são lidos e descartados).
-- Object data: 0x71 (113) no BV, **0x58 (88) no base** (= o opensims2);
-  globais 0x3A no BV, **0x36 (54) no base**; dados de pessoa 0xCC no BV,
-  **0xAA (170) no base**. Fora: erros 0x07 / 0x3F / 0x21.
+- Object data: 0x71 (113) no BV, **0x58 (88) no base**; globais 0x3A no BV,
+  **0x36 (54) no base**; dados de pessoa 0xCC no BV, **0xAA (170) no base**.
+  Fora: erros 0x07 / 0x3F / 0x21. O port usa os **do AL** (18/10): as árvores
+  dos EPs leem além dos do base **e** além dos do BV — com 88/54/170 o
+  `bhav-sweep` do AL acusava 460 globais, 1.897 de person data (1.882 + os 15
+  de vizinho) e 264 de object data fora do intervalo; subindo os tamanhos até
+  a varredura zerar, os **maiores acessos** das árvores do AL são object data
+  **113**, global **59** e person data **230** → arrays de **114 / 60 / 231**
+  (`kObjectDataCount` / `kGlobalCount` / `kPersonDataCount`), e o sweep passa a
+  rodar 46.880 árvores / 13.054.928 instruções (+14,7%) sem nenhum deles. O
+  `OpenTS2` dimensiona object data e globais em 114 e 60 também; o limite
+  compilado do AL é ≥ o medido (aqui não há binário do AL para ler).
 - **Job data (0x21)**: sempre **erro 0x3A** ("Job data not found"), base e
   BV: o jogo não tem esse dono.
 - **Check tree ad (0x0C, 0x1C, 0x1D)**: só pessoa (senão erro 0x1C),
@@ -3867,6 +3933,28 @@ volta** (o opensims2 escrevia o índice no 2º operando e o valor tirado no
   anterior. Remover tira todos os laços entre os dois (confirmado). **Os
   irmãos são laços próprios** (tipo 3, também lidos do bairro), não "um
   pai em comum".
+- **As chamadas 54–84 (0x36–0x54) do AL.** A tabela do editor vai até 53 (a
+  do jogo base, 54 chamadas), mas o conteúdo do AL chama **até 0x54**: o
+  censo do `prim-usage` no AL dá 71 valores no byte 0 e **~232 instruções
+  acima de 53** (0x4E ×57, 0x3E ×34, 0x36 ×18, 0x51 ×11, 0x48 ×11,
+  0x38/0x37 ×10, 0x43 ×9, 0x4F/0x47/0x45/0x35 ×7, …, 0x54 ×2). A que dói é
+  a **60**: o `Function - Main - Set Skin` do semi-global do Sim
+  (`0x7F01EC29:0x22A4`, instrução 2) chama 60, e com o erro 0x2A do port o
+  **Main de todo Sim do lote reiniciava** — e cada reinício reabria o pedido de
+  look_at, que estourava o limite por turno: no `autonomy N001_Lot11 --ticks
+  24000`, com a instalação inteira (como o app), **5.914 resets** do Mortimer, o
+  Main em `Idle #0` e o dos outros dois parado no "Motive Failure - Pass Out -
+  Loop". O PC não tem rótulo para 54–84 (os rótulos ficam no Mac, que para na
+  tabela do base), então o port os trata como as chamadas de motor do base:
+  **registra em `VM::engineRequests` e devolve verdadeiro** (o limite do erro
+  0x2A sobe para 0x54). Medido no mesmo lote: **15 resets** do Mortimer (9 e 62
+  dos outros, por outras falhas do AL: orçamento de instruções, break point,
+  atributo), o Main em "Routing - Goto Head of Bed" e as buscas em
+  **17/94/25** (antes 58/109/38, com os Sims travados). A alternativa (devolver
+  **falso** sem registrar) foi medida e é muito pior: o mesmo lote não terminou
+  24.000 ticks em 30 min, com 32 "too many look_at requests". No `bhav-sweep` do
+  AL as **3.982** falhas "Invalid global sim call" somem: 14.025.434 / 19.927
+  true / 10.335 falhas → **14.093.824 / 23.864 true / 6.385 falhas**.
 
 ### Set to Next (`TrySetToNext`, BV `0xe47288`)
 
@@ -3887,6 +3975,18 @@ volta** (o opensims2 escrevia o índice no 2º operando e o valor tirado no
   flag 0x10000 e com o teste de linha do mundo livre (vtable 0x4C da
   `WorldDB`). Lista por ID, guardada enquanto se itera; um atual que não
   está nela termina a busca (0, falso). Era o "cone de 90°" inferido.
+- **19/20 (o próximo/anterior do grupo multi-tile)**: a âncora é
+  `GetObjectByID(temp 0)` (nula: alvo 0, falso; o 19 também recusa a âncora
+  morrendo, o 20 não); a chave é o grupo da âncora (`+0xe4`, negativa para o
+  objeto fora de grupo: falso sem tocar no alvo) e a lista vem do módulo de
+  objetos (`+0x14c`) — um grupo multi-tile (o dado de objeto 19). Com alvo 0 o
+  19 pega o primeiro objeto válido da lista e o 20 o último; com alvo != 0 o
+  alvo tem de estar na lista (fora: verdadeiro, alvo intacto), é zerado e a
+  busca continua no seguinte (19) ou em **i−2** (20: `0x939f04`/`0x939f12`,
+  pula o objeto imediatamente anterior — um off-by-one do jogo). Lista nula ou
+  vazia: falso sem tocar no alvo. Os únicos usuários no base e no AL são as
+  árvores `0x7FFD4F2D:2006` ("Set to Next") e `:2007` ("Set to Prev"), do grupo
+  da lareira; o RE do PC está no `re-pc-ghidra.md` §(e).
 
 ### Manage Inventory (`TryInventoryAction`, BV `0xe26a40`)
 
@@ -4614,6 +4714,19 @@ que as strings do `Sims2.exe`, mas agora com o byte de cada campo) e o
 - **0x1C Run Tree by Name**: flags u16 2 (0x01/0x02 de onde vem o nome,
   0x04 e 0x08 impressos como true/false, 0x10 passa três (dono, dado) em 6,
   9, 12, 0x20 passa os parâmetros da árvore atual); modo byte 5 (STR# 0xDE).
+
+  **O modo 3 (21/10, pelo exe do PC).** Os rótulos do editor (STR# 0xDE do
+  grupo 0x7FE59FD0, "how to call named tree") são três no **jogo base** — "run in
+  my stack" (0), "run in stack object's stack" (1) e "push onto my stack" (2); o
+  **modo 3 é do Bon Voyage** (o AL o usa em 648 árvores) e o erro do jogo para um
+  modo fora da lista é o **0x2C** ("Bad parameter to call named tree."). O handler
+  da classe base do PC (`FUN_008D3510` @ `0x8D3510`, o caso 3) diz o que ele faz:
+  o **GUID nos temps 0/1** (a palavra baixa no temp 0) é procurado no mundo, o
+  objeto achado dá a **própria árvore** (o vfunc +0x48 dele) e ela roda na hora,
+  como o modo 0, com os mesmos argumentos; um GUID que nenhum objeto tem é o
+  erro **0x7A** ("You sent me a crappy GUID, please fix it."). No AL o modo 3
+  vem logo depois de um **0x7E** (Run Script) — que é justamente quem põe o GUID
+  nos temps.
 - **0x1D Set Motive Change**: motivo byte 2 ("motive" n), += (dono byte 0,
   dado u16 4) por hora, até (dono byte 1, dado u16 6); byte 3: 0x01 limpa
   todos, 0x02 zera a "Motive Decay" dos dados de pessoa.
@@ -4649,6 +4762,15 @@ que as strings do `Sims2.exe`, mas agora com o byte de cada campo) e o
   0x100/0x200 desligada propagando/não, 0x1000 para a sub-fila, 0x20/0x40/
   0x80 no modo ícone); texto u16 14; ícone: objeto (dono 11, dado u16 12),
   GUID u32 5, índice byte 10.
+
+  **No port (21/10).** O índice do texto é o **u8 em 4** na versão de nó 0 e o
+  **u16 em 14** na versão de nó 1: o censo (`s2pkg prim-usage <Res> 32`) do jogo
+  base dá 1 ×173, 2 ×135, 3 ×118… no byte 4 e 0 no byte 14, e o do Bon Voyage
+  dá 0 ×2938 no byte 4 e o índice no byte 14 (1 ×475, 2 ×290, 3 ×173…). O port
+  lia sempre o byte 4, então no BV as árvores que montam uma action string não
+  achavam a string: o sweep do AL passa de 364 falhas "Add/Change the Action
+  String: no STR#" para **47**, e no total de **12.915.916 → 12.917.222
+  instruções, 18.712 → 19.007 true e 13.783 → 13.485 falhas**.
 - **0x69/0x6B Animate Object/Overlay** e **0x6A Animate Sim**: animação u16
   0; flags byte 2: 0x01 espelhada, 0x02 velocidade no temp 2, 0x04 índice num
   parâmetro ("anim id in s.v."), 0x08 interrompível, 0x10 começa na tag do

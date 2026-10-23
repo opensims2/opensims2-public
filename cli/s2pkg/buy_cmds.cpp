@@ -65,7 +65,7 @@ void printEntry(const CatalogEntry& e, Catalog& c, bool verbose) {
 int cmdCatalog(const std::vector<std::string>& args) {
     fs::path res;
     int function = -1, room = -1, sub = -1;
-    bool verbose = false;
+    bool verbose = false, installation = false, build = false;
     std::string thumbKey, thumbOut;
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--function" && i + 1 < args.size())
@@ -76,6 +76,10 @@ int cmdCatalog(const std::vector<std::string>& args) {
             sub = std::stoi(args[++i]);
         else if (args[i] == "-v" || args[i] == "--verbose")
             verbose = true;
+        else if (args[i] == "--installation")
+            installation = true;
+        else if (args[i] == "--build")
+            build = true;
         else if (args[i] == "--thumb" && i + 2 < args.size())
             thumbKey = args[i + 1], thumbOut = args[i + 2], i += 2;
         else
@@ -83,8 +87,16 @@ int cmdCatalog(const std::vector<std::string>& args) {
     }
     if (res.empty())
         throw std::runtime_error("usage: " + std::string(buyUsage()));
-    ResourceIndex index(res);
-    Catalog c = Catalog::load(index);
+    std::unique_ptr<ResourceIndex> owned = std::make_unique<ResourceIndex>(res);
+    if (installation) {
+        // What the app's index reads (src/app/win_main.cpp): the Res tree of
+        // every pack of the installation, the base game's first.
+        owned = std::make_unique<ResourceIndex>();
+        for (const auto& root : installationResRoots(res))
+            owned->addRoot(root);
+    }
+    ResourceIndex& index = *owned;
+    Catalog c = Catalog::load(index, build);
     c.setThumbnailPackage(res / "UserData/Thumbnails/ObjectThumbnails.package");
     if (!thumbKey.empty()) {
         const CatalogEntry* e = c.find(thumbKey);
@@ -98,6 +110,20 @@ int cmdCatalog(const std::vector<std::string>& args) {
         return 0;
     }
     std::printf("catalog: %zu buyable objects, %zu with a thumbnail\n", c.entries().size(), c.thumbnailCount());
+    if (build) {
+        // The objects of Build mode (OBJD field 69 "build mode type" and field
+        // 74 "build Mode Subsort"; docs/buy-build-mac.md §7.6).
+        std::map<std::pair<uint16_t, uint16_t>, std::vector<const CatalogEntry*>> groups;
+        for (const auto& e : c.entries())
+            if (e.buildModeType)
+                groups[{e.buildModeType, e.buildModeSubsort}].push_back(&e);
+        for (const auto& [key, list] : groups) {
+            std::printf("\nbuild type %u subsort %04X: %zu\n", key.first, key.second, list.size());
+            for (size_t i = 0; i < list.size() && i < 6; ++i)
+                std::printf("    %s\n", list[i]->name.c_str());
+        }
+        return 0;
+    }
     if (function < 0 && room < 0) {
         for (int f = 0; f < kFunctionSortCount; ++f) {
             const auto list = c.byFunction(f);
@@ -388,7 +414,7 @@ int buyCommand(const std::string& cmd, int argc, char** argv) {
 }
 
 const char* buyUsage() {
-    return "       s2pkg catalog <Res-dir> [--function bit [--sub bit] | --room bit [--sub function-bit]] [-v]\n"
+    return "       s2pkg catalog <Res-dir> [--installation] [--function bit [--sub bit] | --room bit [--sub function-bit]] [-v]\n"
            "       s2pkg catalog <Res-dir> --thumb <guid|name> <out.png>\n"
            "       s2pkg buy <lot.package> [--buy|--check <guid|name>@x,y[,dir[,level]]] [--sell id] [--move id@x,y[,dir[,level]]]...\n"
            "       s2pkg placement-sweep <lot.package>...   (each saved object tested where it stands, with and without the lot's heights)\n"

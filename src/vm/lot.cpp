@@ -267,7 +267,7 @@ LotLoad loadLot(VM& vm, const Lot& lot, const LotObjects& saved, const std::file
                     e.cObject = cName; // a leftover cObject with this ID
             }
             Object& o = vm.instantiatePart(def->first, def->second, s.id);
-            o.position = {s.x, s.y, s.level};
+            vm.setPosition(o, {s.x, s.y, s.level});
             // Its elevation (cTSObject +0x20c, ReadHeader; vtable 0xb0): a
             // chimney cap's height over the story, a modular step's. The
             // height stays the floor's (kNoHeight).

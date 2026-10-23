@@ -47,6 +47,8 @@ constexpr uint16_t StartObjectRequired = 0x3D;
 constexpr uint16_t TypeAttributeOutOfRange = 0x40;
 constexpr uint16_t MissingMaterialName = 0x46;
 constexpr uint16_t RelationshipNotFound = 0x68;
+constexpr uint16_t CrappyGuid = 0x7A; // "You sent me a crappy GUID, please fix it."
+constexpr uint16_t BadNamedTreeParameter = 0x2C; // "Bad parameter to call named tree."
 constexpr uint16_t ReachOnNonSim = 0x69;
 constexpr uint16_t NoReachObject = 0x6A;
 constexpr uint16_t BadObjectArray = 0x6C;
@@ -59,6 +61,7 @@ constexpr uint16_t BadAnimationType = 0x73;
 constexpr uint16_t TemplateObject = 0x90;
 constexpr uint16_t NoInventory = 0x57;
 constexpr uint16_t TokenIndexOutOfRange = 0x74;
+constexpr uint16_t NoSimInTemp0 = 0x77; // "Temp0 does not point at a Sim ObjectID."
 } // namespace err
 
 inline std::string errorString(uint16_t code) {
@@ -88,6 +91,8 @@ inline std::string errorString(uint16_t code) {
     case 0x23: return "Index into object definition out of range.";
     case 0x29: return "Bad room value requested.";
     case 0x2A: return "Invalid global sim call.";
+    case 0x2B: return "Named tree does not exist.";
+    case 0x2C: return "Bad parameter to call named tree.";
     case 0x2E: return "Invalid constant.";
     case 0x32: return "Invalid object id.";
     case 0x33: return "Local out of range.";
@@ -117,6 +122,8 @@ inline std::string errorString(uint16_t code) {
     case 0x71: return "Missing reach animation.";
     case 0x73: return "Invalid animation type specified in animation string";
     case 0x76: return "Request for babies count out of range.";
+    case 0x77: return "Temp0 does not point at a Sim ObjectID.";
+    case 0x7A: return "You sent me a crappy GUID, please fix it.";
     case 0x94: return "Attempting to create object type that's been unlinked (ie is dead, and has had data removed from it's .package file).";
     case 0x90: return "Trying to create instance of Template Object";
     case 0x3E8: return "Stack overflow.";

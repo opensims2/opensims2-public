@@ -2,6 +2,7 @@
 
 #include "save_cmds.hpp"
 #include "budget.hpp"
+#include "data_index.hpp"
 
 #include "build_cmds.hpp"
 #include "buy_cmds.hpp"
@@ -173,7 +174,8 @@ int cmdLotSave(const std::vector<std::string>& args) {
     const fs::path game = fs::weakly_canonical(res.parent_path().parent_path()); // Res -> TSData -> the game
     if (fs::weakly_canonical(fs::absolute(dst)).string().starts_with(game.string()))
         throw std::runtime_error("refusing to write into the game's data: pick an output outside " + game.string());
-    ResourceIndex index(res);
+    ResourceIndex index;
+    s2pkgAddInstallation(index, res);
     vm::CodeLibrary code(&index);
     const fs::path characters = vm::charactersDirOf(src);
     std::optional<hood::Neighborhood> hood;
@@ -595,7 +597,8 @@ int cmdPlayLoop(const std::vector<std::string>& args) {
     fs::remove_all(session);
     fs::create_directories(session);
 
-    ResourceIndex index(res);
+    ResourceIndex index;
+    s2pkgAddInstallation(index, res);
     UiResources texts(index, res);
     vm::textTables() = [&texts](uint32_t group, uint32_t instance) { return texts.table(group, instance); };
     std::map<int16_t, fs::path> written;
@@ -751,7 +754,8 @@ int cmdObjtCheck(const std::vector<std::string>& args) {
     size_t records = 0, missing = 0, same = 0;
     for (const auto& a : args) {
         const fs::path src(a);
-        ResourceIndex index(resRootOfLot(src));
+        ResourceIndex index;
+        s2pkgAddInstallation(index, resRootOfLot(src));
         vm::CodeLibrary code(&index);
         std::optional<hood::Neighborhood> hood;
         if (const auto hp = vm::neighborhoodPackageOf(src); !hp.empty())

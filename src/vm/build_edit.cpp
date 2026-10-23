@@ -208,8 +208,10 @@ void BuildEditor::syncWorld() {
     vm_.refreshObjectPortals();
     setLotRooms(vm_, lot_);
     for (const auto& [id, room] : moved)
-        if (Object* o = vm_.object(id))
+        if (Object* o = vm_.object(id)) {
             o->data[objdata::Room] = room;
+            vm_.noteRoomChanged(id);
+        }
     vm_.followContainers(); // SetRoom(..., true): the contained objects too
     for (const auto& [id, room] : moved)
         if (vm_.object(id))

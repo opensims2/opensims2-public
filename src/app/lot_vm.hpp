@@ -171,6 +171,14 @@ public:
     // z, in the model's frame (try_look_at, BV 0x6a19f8). Unset or nothing:
     // 0.75 over its floor.
     std::function<std::optional<Vec3>(int16_t id)> objectLookPoint;
+    // Look At's slot point (world space; byte 14 kinds 1/2/3): the point of
+    // the slot's bone by name (STR# 0x90 "Model - Bones"; a Sim's drawn
+    // bones included, so the head follows one) or, without a bone, of the
+    // slot's model-space offset through the object's placement (the Mac
+    // binary: the look's slot's bone by name and its position as an
+    // offset).
+    std::function<std::optional<Vec3>(int16_t id, const std::array<float, 3>& offset, const std::string& bone)>
+        objectSlotPoint;
 
 private:
     // The bones of a request's IK object for `self`'s IK targets of type 2

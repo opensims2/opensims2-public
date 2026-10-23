@@ -4,6 +4,8 @@
 #include "placement.hpp"
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 
 namespace os2::vm {
 
@@ -106,10 +108,19 @@ void onRoomChanged(VM& vm, ObjectId id) {
 }
 
 void notifyRoomChanges(VM& vm) {
-    std::vector<ObjectId> moved;
-    for (const auto& [id, o] : vm.eachObject())
-        if (o.data[objdata::Room] != o.notifiedRoom)
-            moved.push_back(id);
+    // Only the objects whose room data was written since the last tick: the
+    // port's room writers and Context::set mark them (VM::noteRoomChanged),
+    // and the objects made or loaded by a lot mark themselves. The full scan
+    // this replaces was 0.36 s of a 43,200-tick run; OS2_CHECK_ROOM_DIRTY=1
+    // still runs it and reports an object the set missed.
+    if (std::getenv("OS2_CHECK_ROOM_DIRTY")) {
+        for (const auto& [id, o] : vm.eachObject())
+            if (o.data[objdata::Room] != o.notifiedRoom && !vm.roomDirty().count(id))
+                std::fprintf(stderr, "room dirty check: object %d not marked (room %d, notified %d)\n", int(id),
+                             int(o.data[objdata::Room]), int(o.notifiedRoom));
+    }
+    std::vector<ObjectId> moved(vm.roomDirty().begin(), vm.roomDirty().end());
+    vm.clearRoomDirty();
     for (ObjectId id : moved)
         onRoomChanged(vm, id);
 }

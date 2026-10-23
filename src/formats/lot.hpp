@@ -7,11 +7,20 @@
 #include <string>
 #include <vector>
 
+#include "binreader.hpp"
 #include "xform.hpp"
 
 namespace os2 {
 
 class DbpfPackage;
+
+// An empty lot package: the stub of 96 bytes the game writes for a lot with
+// nothing in it (N002_Lot32 in the base game's N002). The game loads it as a
+// lot without objects; ours used to fail with "no elevation array", and the
+// soak counted it as a load error (docs/soak-report.md).
+struct EmptyLotPackage : FormatError {
+    using FormatError::FormatError;
+};
 
 // Build-mode content of a lot package (Neighborhoods/N###/Lots/*.package),
 // from the lot's "world database" blocks. Every resource starts with a 64-byte

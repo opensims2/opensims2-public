@@ -735,6 +735,37 @@ O que faltava ler além do que o `vm/view.cpp` já fazia:
   objeto, `SlotID` = slot | tipo << 12) e os dados de pessoa 41–44 (alvo,
   slot, estado `0x26AD`, duração).
 
+**Os slots, no código (18/10).** O byte 14 escolhe a família de slots e o
+byte 8 o índice **dentro dela**, na tabela SLOT do alvo: 1 → as entradas de
+tipo **4**, 2 → as de tipo **3** e 3 → as de tipo **0** (as três famílias
+que a comunidade documenta — target, routing e container; o `SlotID` do
+pedido empacota os dois, `slot | tipo << 12`); passou da contagem daquele
+tipo, erro 0x1B. Medido no conteúdo: a sonda nas varreduras do AL (8 Look
+Ats), do base (7) e do N001_Lot11 (2) não achou nenhum índice fora da
+contagem — a `Sub - LookAt` (tipo 3, índice 10 nas 22 entradas de tipo 0 do
+Sim), a `Sub - Cat - Set Look At` (tipo 1), o Eye Attractor 7F1C288F (índice
+3 nas 4 de tipo 4) e o índice 7 nas 9 de tipo 4 da fábrica de doces
+7F959124 — e um censo estático (a passada do sweep, sem executar) achou
+**316 leituras com tipo** no AL (157 de tipo 1, 124 de tipo 3, **nenhuma de
+tipo 2**; 35 de `RayTrace`, que usa a mesma convenção) e 200 no base: o
+maior índice de tipo 3 é **37**, e os **únicos** objetos que o cabem são os
+dois tabuleiros de xadrez (**67** entradas de tipo 0 — as casas; todo o
+resto tem ≤ 25), o que fecha a família de contenção; o avião de papel, que
+tem as duas famílias no mesmo SLOT (0 1 3 3 4), tem Look Ats próprios
+(7F385F33/1008 e 0x1022) com índice 0 nos dois casos, dentro das contagens.
+Censo dos **17 `objects.package`** do UC (**4.121 SLOTs distintos**,
+35.426 leituras — os pacotes dos EPs/SPs repetem): um objeto usa os tipos
+**0, 3 e 4**; o **1** só aparece em **quatro objetos** — Baby Bottle
+(7FBA6191), Baby Bottle - Smart Milk (7F228D60), Toy - Paper Airplane
+(7F385F33) e Newspaper (7F08E23C) — e o **2** em nenhum. O tipo 1 (o
+"location" da nomenclatura Sims 1) **não tem família no Look At** (aberto: se
+a mira incluísse o 1, o avião de papel — o único com os dois — miraria o
+`(0,0,1)` do entry em vez do osso; ficamos com o tipo 4, a família que o
+nome "mira" e o conteúdo medem). O `vm/view.cpp` valida e guarda o slot
+(`LookAt::slotKind`/`slotIndex`); o app mira o ponto do entry pelo osso
+(STR# `0x90` "Model - Bones", os ossos desenhados de um Sim inclusive) ou,
+sem osso, pelo deslocamento (`objectSlotPoint`).
+
 ### 11.2 O que o `cActiveAnimLookAt::AnimUpdate` faz (BV `0xd41e04`; lido inteiro e portado na rodada n34, §12)
 
 É uma função de ~11 KB: a cadeia de IK de olhar (estratégia `0x09F9E87E`,

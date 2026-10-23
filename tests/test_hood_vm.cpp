@@ -1,4 +1,4 @@
-// The neighborhood in the VM (vm/hood_bridge): loading a hand-built
+﻿// The neighborhood in the VM (vm/hood_bridge): loading a hand-built
 // hood::Neighborhood and the primitives and data owners that read it.
 #include "formats/neighborhood.hpp"
 #include "formats/hood_lots.hpp"
@@ -177,6 +177,17 @@ struct Fixture {
         code.add(kSimGroup, inst, d);
         return vm.instantiatePart(kSimGroup, inst);
     }
+    // A plain (non-person) object of a GUID of its own, in the object list.
+    Object& thing(uint32_t guid) {
+        ObjectDefinition d;
+        d.fields.resize(60);
+        d.fields[(0x5C - 0x44) / 2] = uint16_t(guid);
+        d.fields[(0x5E - 0x44) / 2] = uint16_t(guid >> 16);
+        static uint16_t next = 0x300;
+        const uint16_t inst = next++;
+        code.add(kSimGroup, inst, d);
+        return vm.instantiatePart(kSimGroup, inst);
+    }
     Thread run(ObjectId me, uint16_t id, Behavior b, ObjectId stackObject = 0) {
         code.add(kSimGroup, id, std::move(b));
         Thread t = vm.start(me, id, {}, stackObject);
@@ -290,6 +301,34 @@ static void testPrimitives() {
                      expr(Temp, 4, Assign, Temp, 3, go(6), E), expr(Temp, 7, Assign, Lit, 0, T, E)}));
     check(ok(t) && t.temps[2] == 15 && t.temps[4] == 47, "Set to Next 36 and 11");
 
+    // Set to Next 39: the next neighbor with a lifetime relationship
+    // (variable 1 >= 0) with the neighbor in temp 0, skipping the candidates
+    // the common filter rejects (object data 56 bits 0/2 and 107).
+    Object& townie = fx.sim(kTownieGuid);
+    townie.person->data[persondata::NeighborId] = 14;
+    vm.relationships[VM::RelationshipPair{{true, 1}, {true, 14}}][1] = 50;
+    auto next39 = [&](Target onTrue, Target onFalse) {
+        Behavior::Instruction in = instr(0x1F, onTrue, onFalse, {0, 0, 0, 0, 0xA7, Temp, 0, 1, 0});
+        in.nodeVersion = 1; // the Bon Voyage parameter layout: the flags and the common filter
+        return in;
+    };
+    t = fx.run(me.id, 0x1010,
+               tree({expr(Temp, 0, Assign, Lit, 1, go(1), E), expr(Temp, 1, Assign, Lit, 0, go(2), E),
+                     next39(T, F)}));
+    check(ok(t) && t.temps[1] == 14, "Set to Next 39: the neighbor with a lifetime relationship");
+    townie.data[107] = 1;
+    t = fx.run(me.id, 0x1011,
+               tree({expr(Temp, 0, Assign, Lit, 1, go(1), E), expr(Temp, 1, Assign, Lit, 0, go(2), E),
+                     next39(F, F)}));
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 39: object data 107 rejects the candidate");
+    townie.data[107] = 0;
+    townie.data[56] = 1;
+    t = fx.run(me.id, 0x1012,
+               tree({expr(Temp, 0, Assign, Lit, 1, go(1), E), expr(Temp, 1, Assign, Lit, 0, go(2), E),
+                     next39(F, F)}));
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 39: object data 56 bit 0 rejects the candidate");
+    townie.data[56] = 0;
+
     // Neighbor data (0x18) of Bella (15) as the stack object; neighborhood data (0x22).
     vm.neighborhoodData[2] = 11;
     t = fx.run(me.id, 0x1008,
@@ -312,11 +351,11 @@ static void testPrimitives() {
 }
 
 // With the game's data (OS2_DATA): the lot objects' value of the Lots &
-// Houses bin's "Ranch Retreat" (cx_00000001) as the game saved it, §1090:
-// its five doors (§80) count as Build mode objects through their master's
+// Houses bin's "Ranch Retreat" (cx_00000001) as the game saved it, Â§1090:
+// its five doors (Â§80) count as Build mode objects through their master's
 // build mode type (field 0x45 = 8; the parts have 0), with the windows'
-// §690. The value missed the doors (§690), so the lot's price dropped after
-// a save (live QA 14: §10.857 for sale, §10.387 after the save).
+// Â§690. The value missed the doors (Â§690), so the lot's price dropped after
+// a save (live QA 14: Â§10.857 for sale, Â§10.387 after the save).
 static void testLotObjectsValue() {
     const char* data = std::getenv("OS2_DATA");
     if (!data)
@@ -576,6 +615,106 @@ static void testEvictPlayedLot() {
     check(vm.families[5].house == 0 && vm.evictedLots.count(18), "evict: another lot's family leaves");
 }
 
+// Set to Next 19 / 20 (the AL "Set to Next" / "Set to Prev" wrappers,
+// 0x7FFD4F2D:2006/2007, the fireplace's group): the objects of the multi-tile
+// group of the object in temp 0, in the object module's list order, forward
+// (19) or backward (20). 20's backward walk starts two places before the
+// current object (the binary's off-by-one), so it skips the one just before.
+static void testSetToNextGroup() {
+    Fixture fx;
+    VM& vm = fx.vm;
+    Object& me = fx.sim(kMortimerGuid);
+    Object& lead = fx.thing(0x30000001);
+    Object& p1 = fx.thing(0x30000002);
+    Object& p2 = fx.thing(0x30000003);
+    p1.data[objdata::LeadTileObjectId] = lead.id;
+    p2.data[objdata::LeadTileObjectId] = lead.id;
+    vm.setListOrder(lead, 1);
+    vm.setListOrder(p1, 2);
+    vm.setListOrder(p2, 3);
+    auto step = [&](uint8_t type, int16_t anchor, int16_t target) {
+        static uint16_t id = 0x1020;
+        return fx.run(me.id, id++,
+                      tree({expr(Temp, 0, Assign, Lit, anchor, go(1), E),
+                            expr(Temp, 1, Assign, Lit, target, go(2), E),
+                            instr(0x1F, T, F, {0, 0, 0, 0, uint8_t(0x80 | type), Temp, 0, 1, 0})}));
+    };
+    Thread t = step(19, lead.id, 0);
+    check(ok(t) && t.temps[1] == lead.id, "Set to Next 19: no target gives the group's first object");
+    t = step(19, lead.id, lead.id);
+    check(ok(t) && t.temps[1] == p1.id, "Set to Next 19: the next object of the group");
+    t = step(19, lead.id, p2.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 19: nothing after the last object");
+    t = step(19, lead.id, me.id);
+    check(ok(t) && t.temps[1] == me.id, "Set to Next 19: a target outside the group ends it with true");
+    t = step(20, lead.id, 0);
+    check(ok(t) && t.temps[1] == p2.id, "Set to Prev 20: no target gives the group's last object");
+    t = step(20, lead.id, p2.id);
+    check(ok(t) && t.temps[1] == lead.id, "Set to Prev 20: the walk skips the object before the current one");
+    t = step(20, lead.id, p1.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Prev 20: nothing before the second object");
+    // The anchor: missing (both write 0 and fail); 19 also refuses one queued to
+    // die, 20 does not; an object in no group leaves the target as it is.
+    t = step(19, 0, p1.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 19: no object in temp 0");
+    t = step(20, 0, p1.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Prev 20: no object in temp 0");
+    vm.dyingObjects.insert(p1.id);
+    t = step(19, lead.id, lead.id);
+    check(ok(t) && t.temps[1] == p2.id, "Set to Next 19: a dying part is skipped");
+    vm.dyingObjects.erase(p1.id);
+    vm.dyingObjects.insert(lead.id);
+    t = step(19, lead.id, p1.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 19: an anchor queued to die");
+    t = step(20, lead.id, 0);
+    check(ok(t) && t.temps[1] == p2.id, "Set to Prev 20: a dying anchor still searches");
+    vm.dyingObjects.clear();
+    t = step(19, me.id, p1.id);
+    check(ok(t, false) && t.temps[1] == p1.id, "Set to Next 19: an object in no group");
+    t = step(20, me.id, p1.id);
+    check(ok(t, false) && t.temps[1] == p1.id, "Set to Prev 20: an object in no group");
+}
+
+// Set to Next 13 (the AL "Reaction - Banter", its only user): the nearest
+// person to the person in temp 0, then the next nearest after the target, its
+// distance in temp 4 and its 0-7 direction in temp 5.
+static void testSetToNextNearest() {
+    Fixture fx;
+    VM& vm = fx.vm;
+    Object& me = fx.sim(kMortimerGuid);
+    Object& near = fx.sim(kBellaGuid);
+    Object& far = fx.sim(kTownieGuid);
+    vm.setPosition(me, {10.f, 10.f, 0});
+    vm.setPosition(near, {11.f, 12.f, 0});
+    vm.setPosition(far, {13.f, 14.f, 0});
+    auto step = [&](int16_t anchor, int16_t target) {
+        static uint16_t id = 0x1040;
+        Behavior::Instruction in = instr(0x1F, T, F, {0, 0, 0, 0, 0x80 | 13, Temp, 0, 1, 0});
+        in.nodeVersion = 1; // the Bon Voyage layout: the common filter
+        return fx.run(me.id, id++,
+                      tree({expr(Temp, 0, Assign, Lit, anchor, go(1), E),
+                            expr(Temp, 1, Assign, Lit, target, go(2), E), in}));
+    };
+    Thread t = step(me.id, 0);
+    check(ok(t) && t.temps[1] == near.id && t.temps[4] == 2 && t.temps[5] == directionOf(1.f, 2.f),
+          "Set to Next 13: the nearest person, its distance and direction");
+    t = step(me.id, near.id);
+    check(ok(t) && t.temps[1] == far.id && t.temps[4] == 5, "Set to Next 13: the next nearest after the target");
+    t = step(me.id, far.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 13: no one after the farthest");
+    far.data[107] = 1;
+    t = step(me.id, near.id);
+    check(ok(t, false) && t.temps[1] == 0, "Set to Next 13: object data 107 rejects the candidate");
+    far.data[107] = 0;
+    t = step(0, 0);
+    check(t.status == Thread::Status::Failed && t.error.find("does not exist") != std::string::npos,
+          "Set to Next 13: no object in temp 0");
+    Object& table = fx.thing(0x30000010);
+    t = step(table.id, 0);
+    check(t.status == Thread::Status::Failed && t.error.find("person") != std::string::npos,
+          "Set to Next 13: the anchor must be a person");
+}
+
 int main() {
     testNewLot();
     testLotObjectsValue();
@@ -583,6 +722,8 @@ int main() {
     testBedTogether(true);
     testLoad();
     testPrimitives();
+    testSetToNextGroup();
+    testSetToNextNearest();
     testEvictPlayedLot();
     if (failures)
         std::fprintf(stderr, "%d failure(s)\n", failures);

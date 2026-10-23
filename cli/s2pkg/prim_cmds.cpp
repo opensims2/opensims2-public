@@ -22,8 +22,9 @@ constexpr uint32_t kTypeBhav = 0x42484156;
 
 // Every use of `opcode` in the BHAVs under `res`: a histogram of each
 // operand byte, then up to `examples` uses (group, instance, tree name,
-// node, operands).
-int cmdPrimUsage(const std::string& res, uint16_t opcode, size_t examples) {
+// node, operands). With `filter` ("byte=value", the byte 0-15 and the value
+// 0-255), only the uses whose byte has that value are listed.
+int cmdPrimUsage(const std::string& res, uint16_t opcode, size_t examples, int filterByte, int filterValue) {
     ResourceIndex index(res);
     std::array<std::map<uint8_t, size_t>, 16> bytes;
     size_t uses = 0, shown = 0;
@@ -42,6 +43,8 @@ int cmdPrimUsage(const std::string& res, uint16_t opcode, size_t examples) {
             ++uses;
             for (size_t k = 0; k < 16; ++k)
                 ++bytes[k][in.operands[k]];
+            if (filterByte >= 0 && in.operands[size_t(filterByte)] != uint8_t(filterValue))
+                continue;
             if (shown++ < examples) {
                 char buf[512];
                 int n = std::snprintf(buf, sizeof buf, "%08X %04X #%-3zu v%u ", loc.entry->tgi.group,
@@ -60,7 +63,7 @@ int cmdPrimUsage(const std::string& res, uint16_t opcode, size_t examples) {
             v.emplace_back(n, x);
         std::sort(v.rbegin(), v.rend());
         std::printf("  byte %2zu (%3zu values):", k, v.size());
-        for (size_t j = 0; j < v.size() && j < 10; ++j)
+        for (size_t j = 0; j < v.size(); ++j)
             std::printf(" %02X x%zu", v[j].second, v[j].first);
         std::printf("\n");
     }
@@ -156,9 +159,20 @@ int cmdEventTreeSweep(const std::string& res) {
 int primCommand(const std::string& cmd, int argc, char** argv) {
     if (cmd == "event-tree-sweep" && argc == 3)
         return cmdEventTreeSweep(argv[2]);
-    if (cmd == "prim-usage" && (argc == 4 || argc == 5))
+    if (cmd == "prim-usage" && (argc == 4 || argc == 5 || argc == 6)) {
+        int filterByte = -1, filterValue = -1;
+        if (argc == 6) {
+            // "byte=value"
+            const std::string f = argv[5];
+            const size_t eq = f.find('=');
+            if (eq == std::string::npos)
+                throw std::runtime_error("prim-usage: o filtro e byte=value");
+            filterByte = std::stoi(f.substr(0, eq));
+            filterValue = std::stoi(f.substr(eq + 1));
+        }
         return cmdPrimUsage(argv[2], uint16_t(std::stoul(argv[3], nullptr, 16)),
-                            argc == 5 ? std::stoul(argv[4]) : 40);
+                            argc >= 5 ? std::stoul(argv[4]) : 40, filterByte, filterValue);
+    }
     return -1;
 }
 

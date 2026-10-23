@@ -650,7 +650,11 @@ Exit changeActionString(Context& c) {
     const Object* owner = c.vm.object(c.frame.codeOwner);
     if (!owner)
         return Exit::True;
-    const int index = flags & 0x10 ? c.thread.temps[0] : o[4];
+    // The string number: the base game (node version 0) reads the u8 at 4;
+    // the node version 1 (Bon Voyage) the u16 at 14 (docs/primitives-mac.md
+    // §5, "texto u16 14").
+    const int index = flags & 0x10 ? c.thread.temps[0]
+                                    : (c.instruction.nodeVersion ? int(le16(&o[14])) : int(o[4]));
     const StringTable* strings = nullptr;
     auto tryGroup = [&](uint32_t group) {
         if (strings || !group)

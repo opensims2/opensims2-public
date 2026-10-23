@@ -31,11 +31,17 @@ uint32_t count(BinReader& r, size_t minBytesEach, const char* what) {
     return n;
 }
 
-std::vector<InventoryToken> readTokens(BinReader& r) {
+std::vector<InventoryToken> readTokens(BinReader& r, uint32_t version) {
     std::vector<InventoryToken> out(count(r, 10, "NGBH tokens"));
     for (auto& t : out) {
         t.guid = r.u32();
         t.flags = r.u16();
+        if (version >= 0xC2) // OFB
+            t.flags2 = r.u16();
+        if (version >= 0xBE) // NL
+            t.inventoryNumber = r.u32();
+        if (version >= 0xCB) // Seasons+
+            t.unknown = r.u16();
         t.data.resize(count(r, 2, "NGBH token data"));
         for (auto& v : t.data)
             v = r.u16();
@@ -43,18 +49,22 @@ std::vector<InventoryToken> readTokens(BinReader& r) {
     return out;
 }
 
-Inventory readInventory(BinReader& r, uint32_t id) {
+Inventory readInventory(BinReader& r, uint32_t id, uint32_t version) {
     Inventory inv;
     inv.id = id;
-    inv.counted = readTokens(r);
-    inv.singular = readTokens(r);
+    inv.counted = readTokens(r, version);
+    inv.singular = readTokens(r, version);
     return inv;
 }
 
-std::vector<Inventory> readInventories(BinReader& r) {
+std::vector<Inventory> readInventories(BinReader& r, uint32_t version) {
     std::vector<Inventory> out(count(r, 12, "NGBH slots"));
-    for (auto& inv : out)
-        inv = readInventory(r, r.u32());
+    for (auto& inv : out) {
+        const uint32_t id = r.u32();
+        const uint32_t slotVersion = version >= 0xBE ? r.u32() : 0;
+        inv = readInventory(r, id, version);
+        inv.version = slotVersion;
+    }
     return out;
 }
 
@@ -172,7 +182,9 @@ NeighborhoodInventories NeighborhoodInventories::parse(std::span<const uint8_t> 
         throw FormatError("NGBH: bad magic");
     NeighborhoodInventories n;
     n.version = r.u32();
-    if (n.version != 0x6F)
+    // The versions the UC content ships (the SimWiki's NGBH page): 0x6F base,
+    // 0x70 University, 0xBE Nightlife, 0xC2 OFB, 0xCB Seasons and later.
+    if (n.version != 0x6F && n.version != 0x70 && n.version != 0xBE && n.version != 0xC2 && n.version != 0xCB)
         throw FormatError("NGBH: unsupported version " + hexString(n.version));
     n.zero = r.u32();
     n.tilesX = r.u32();
@@ -180,13 +192,39 @@ NeighborhoodInventories NeighborhoodInventories::parse(std::span<const uint8_t> 
     n.regionType = str32(r);
     for (auto& d : n.data)
         d = r.i16();
-    n.global = readInventory(r, 0);
-    n.lots = readInventories(r);
-    n.families = readInventories(r);
-    n.neighbors = readInventories(r);
+    // The 16 words above absorb the global slot's ID word (0); from 0xBE the
+    // slot also carries its version, right after that word.
+    if (n.version >= 0xBE)
+        n.globalVersion = r.u32();
+    n.global = readInventory(r, 0, n.version);
+    n.lots = readInventories(r, n.version);
+    n.families = readInventories(r, n.version);
+    n.neighbors = readInventories(r, n.version);
     n.flagFD = r.u8() != 0; // Read keeps (byte != 0)
+    if (n.version >= 0x70)  // University+: the EP ready marker
+        n.epReady = r.u32();
     r.expectEnd("NGBH");
     return n;
+}
+
+// The person data count of each SDSC version, from SimPE's SDescWrapper
+// (RelationPosition minus its 0x0A and the 12-byte header) and measured on
+// the UC neighborhoods: every record closes exactly on its neighbor ID.
+size_t sdscPersonDataCount(uint32_t version) {
+    switch (version) {
+    case 0x20: return 170; // base game
+    case 0x22: return 179; // University
+    case 0x29: return 195; // Nightlife
+    case 0x2A: return 199; // Open for Business
+    case 0x2C: return 200; // Pets
+    case 0x2D: return 201; // Castaway
+    case 0x2E:            // Bon Voyage
+    case 0x2F: return 204; // Bon Voyage (b)
+    case 0x33: return 228; // FreeTime
+    case 0x35: return 230; // Apartment Life template (E002)
+    case 0x36: return 231; // Apartment Life
+    default: throw FormatError("SDSC: unsupported version " + hexString(version));
+    }
 }
 
 SimDescription SimDescription::parse(std::span<const uint8_t> data) {
@@ -194,9 +232,9 @@ SimDescription SimDescription::parse(std::span<const uint8_t> data) {
     SimDescription s;
     s.unknown0 = r.u32();
     s.version = r.u32();
-    if (s.version != 0x20)
-        throw FormatError("SDSC: unsupported version " + hexString(s.version));
+    const size_t personDataCount = sdscPersonDataCount(s.version);
     s.unknown2 = r.u32();
+    s.personData.resize(personDataCount);
     for (auto& v : s.personData)
         v = r.i16();
     s.neighborId = r.u16();
@@ -206,6 +244,10 @@ SimDescription SimDescription::parse(std::span<const uint8_t> data) {
     for (auto& v : s.relations)
         v = r.u32();
     s.trailer = r.u8();
+    if (s.version >= 0x2E) { // Bon Voyage: the collectibles u64
+        const uint32_t low = r.u32(), high = r.u32();
+        s.collectibles = uint64_t(low) | (uint64_t(high) << 32);
+    }
     r.expectEnd("SDSC");
     return s;
 }
@@ -216,10 +258,16 @@ FamilyRecord FamilyRecord::parse(std::span<const uint8_t> data) {
         throw FormatError("FAMI: bad magic");
     FamilyRecord f;
     f.version = r.u32();
-    if (f.version != 0x4E)
+    // 0x4E base, 0x4F University, 0x50 Nightlife, 0x51 OFB, 0x54 Pets,
+    // 0x55 BV; the fields below come from the SimWiki's FAMI page.
+    if (f.version < 0x4E || f.version > 0x55)
         throw FormatError("FAMI: unsupported version " + hexString(f.version));
     f.unknown = r.u32();
     f.lot = r.u32();
+    if (f.version >= 0x50) // Nightlife: the last lot the family played on
+        f.lastPlayedLot = r.u32();
+    if (f.version >= 0x55)
+        f.vacationLot = r.u32();
     f.simGroupId = r.u32();
     f.funds = r.i32();
     f.friends = r.u32();
@@ -228,6 +276,10 @@ FamilyRecord FamilyRecord::parse(std::span<const uint8_t> data) {
     for (auto& g : f.members)
         g = r.u32();
     f.albumGuid = r.u32();
+    if (f.version >= 0x4F)
+        f.neighborhood = r.u32();
+    if (f.version >= 0x51)
+        f.businessFunds = r.i32();
     r.expectEnd("FAMI");
     return f;
 }
@@ -296,8 +348,15 @@ void parseBaseLotInfo(BinReader& r, LotInfo& l, bool str7Names = false) {
         l.roadHeight = r.f32();
     if (l.baseVersion > 7)
         l.baseUnknown = r.u32();
-    if (l.baseVersion == 11)
-        throw FormatError("lot info: apartment base version not supported");
+    if (l.baseVersion > 11)
+        throw FormatError("lot info: unsupported base version " + std::to_string(l.baseVersion));
+    if (l.baseVersion == 11) { // Apartment Life
+        l.apartments = r.u8();
+        l.rentHigh = r.u32();
+        l.rentLow = r.u32();
+        l.lotClass = r.u32();
+        l.lotClassOverride = r.u8();
+    }
 }
 } // namespace
 
@@ -331,12 +390,25 @@ NeighborhoodInfo NeighborhoodInfo::parse(std::span<const uint8_t> data) {
     BinReader r(data);
     NeighborhoodInfo n;
     n.version = r.u32();
+    if (n.version < 3 || n.version > 0x0A)
+        throw FormatError("NID: unsupported version " + std::to_string(n.version));
     n.prefix = str32(r);
     n.id = r.u32();
     if (n.version >= 5) {
         n.type = r.u32();
         n.subPrefix = str32(r);
     }
+    if (n.version >= 7) {
+        n.downtown = r.u32();
+        n.unknown7 = r.u32();
+    }
+    if (n.version >= 8)
+        n.unknown8 = r.u32();
+    if (n.version >= 9)
+        n.stealth = r.u32();
+    if (n.version >= 0x0A)
+        for (auto& b : n.unknownA)
+            b = r.u8();
     r.expectEnd("NID");
     return n;
 }

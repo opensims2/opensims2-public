@@ -3,6 +3,7 @@
 #include "formats/anim.hpp"
 #include "formats/bhav.hpp"
 #include "formats/gmdc.hpp"
+#include "formats/lua50.hpp"
 #include "formats/image.hpp"
 #include "formats/rcol.hpp"
 #include "formats/scenegraph.hpp"
@@ -11,6 +12,7 @@
 #include "formats/txmt.hpp"
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <stdexcept>
@@ -379,7 +381,10 @@ std::string describeSimAntics(uint32_t type, std::span<const uint8_t> data) {
 
 } // namespace
 
-bool hasDecoder(uint32_t type) { return isRcolType(type) || isStringType(type) || isSimAnticsType(type); }
+bool hasDecoder(uint32_t type) {
+    return isRcolType(type) || isStringType(type) || isSimAnticsType(type) || type == 0x9012468A ||
+           type == 0x9012468B; // an ObjectScripts Lua 5.0 chunk (docs/lua-scripts.md)
+}
 
 std::string describeResource(uint32_t type, std::span<const uint8_t> data) {
     if (isRcolType(type))
@@ -388,6 +393,16 @@ std::string describeResource(uint32_t type, std::span<const uint8_t> data) {
         return describeStrings(data);
     if (isSimAnticsType(type))
         return describeSimAntics(type, data);
+    if (type == 0x9012468A || type == 0x9012468B) {
+        // An ObjectScripts resource: an 8-byte header, the script's name and the
+        // Lua 5.0 chunk right after it (docs/lua-scripts.md).
+        static const uint8_t signature[4] = {0x1B, 'L', 'u', 'a'};
+        const auto at = std::search(data.begin(), data.end(), signature, signature + 4);
+        if (at == data.end())
+            throw FormatError("ObjectScripts resource: no Lua chunk");
+        const std::string name(data.begin() + 8, at);
+        return describeLua50(parseLua50(std::vector<uint8_t>(at, data.end())), "script \"" + name + "\"");
+    }
     throw std::runtime_error("no decoder for this type");
 }
 

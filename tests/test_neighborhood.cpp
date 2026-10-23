@@ -85,6 +85,19 @@ static std::vector<uint8_t> makeSdsc(uint16_t id, uint32_t guid, int16_t age, in
     return w.b;
 }
 
+// SDSC 0x36 (AL): 231 person data words, trailer 0 and the BV collectibles.
+static std::vector<uint8_t> makeSdscVersion(uint32_t version, size_t personData) {
+    Writer w;
+    w.u32(0x71).u32(version).u32(version);
+    for (size_t i = 0; i < personData; ++i)
+        w.u16(uint16_t(i == sdsc::Age ? lifestage::Adult : i == sdsc::Gender ? 1 : 0));
+    w.u16(4).u32(0x724CD298).u32(3).u32(2).u32(5).u32(7).u8(0);
+    w.u32(0x9ABCDEF0).u32(0x12345678);
+    return w.b;
+}
+
+static std::vector<uint8_t> makeSdsc36() { return makeSdscVersion(0x36, 231); }
+
 static std::vector<uint8_t> fami(uint32_t lot, int32_t funds, std::vector<uint32_t> members) {
     Writer w;
     w.u32(hoodtype::FAMI).u32(0x4E).u32(0).u32(lot).u32(1).u32(uint32_t(funds)).u32(2).u32(9);
@@ -92,6 +105,45 @@ static std::vector<uint8_t> fami(uint32_t lot, int32_t funds, std::vector<uint32
     for (auto g : members)
         w.u32(g);
     w.u32(0x12345678);
+    return w.b;
+}
+
+// FAMI 0x55 (BV): lot, last played lot, vacation lot, creation order, funds,
+// friends, flags, members, album, neighborhood, business funds.
+static std::vector<uint8_t> fami55() {
+    Writer w;
+    w.u32(hoodtype::FAMI).u32(0x55).u32(0).u32(124).u32(124).u32(0).u32(1).u32(4262).u32(3).u32(1);
+    w.u32(2).u32(0x7518EF1F).u32(0x352C9AC9).u32(0xD518F8C7).u32(1).u32(4262);
+    return w.b;
+}
+
+// FAMI 0x50 (Nightlife): the last played lot, without the business funds.
+static std::vector<uint8_t> fami50() {
+    Writer w;
+    w.u32(hoodtype::FAMI).u32(0x50).u32(0).u32(128).u32(128).u32(14).u32(0).u32(0).u32(0);
+    w.u32(0).u32(0x70D11698).u32(1);
+    return w.b;
+}
+
+// NGBH 0xCB (Seasons+): the slot version words, the token flags2 / inventory
+// number / unknown and the EP ready marker.
+static std::vector<uint8_t> ngbhCb() {
+    Writer w;
+    w.u32(hoodtype::NGBH).u32(0xCB).u32(0).u32(0x80).u32(0x80).str32("Temperate").zeros(32);
+    w.u32(0xBE); // global slot version, after the 16 data words
+    auto item = [&](uint32_t guid, uint16_t flags, uint16_t flags2, uint32_t inv, uint16_t unknown,
+                    std::vector<uint16_t> data) {
+        w.u32(guid).u16(flags).u16(flags2).u32(inv).u16(unknown).u32(uint32_t(data.size()));
+        for (auto v : data)
+            w.u16(v);
+    };
+    w.u32(0);                              // global counted
+    w.u32(1); item(0x6D9E58F0, 0, 0, 7, 9, {1, 0}); // global singular
+    w.u32(1).u32(11).u32(0xBE);            // one lot, its slot version
+    w.u32(0);                              // counted
+    w.u32(1); item(0x2CD9022F, 0, 0, 8, 10, {0, 300, 300}); // singular
+    w.u32(0).u32(0);                       // no families, no neighbors
+    w.u8(1).u32(7);                        // flag +0xFD, EP ready marker
     return w.b;
 }
 
@@ -118,6 +170,22 @@ static std::vector<uint8_t> lotInfo(int32_t id) {
     w.u16(13).u16(6).u32(1).u32(1).u8(0).u8(4).u8(2).u32(3).str32("1 Sim Lane").str32("desc");
     w.u32(4).f32(1).f32(2).f32(3).f32(4);
     w.u32(67).u32(56).f32(324.5f).u32(uint32_t(id)).u8(2).str32("lottexture-test-01").u8(1);
+    return w.b;
+}
+
+// Lot info 18 wrapping base 11 (AL): the apartment header after the version 8
+// field, then the position, the texture, the business owner and the apartment
+// base/sublot tail (kept in rest).
+static std::vector<uint8_t> lotInfoApartment(int32_t id) {
+    Writer w;
+    w.u16(18).u16(11).u32(4).u32(2).u8(8).u8(4).u8(2).u32(3).str32("Apt Base").str32("desc");
+    w.u32(0);    // no heights
+    w.f32(0);    // road height (> 6)
+    w.u32(0);    // version 8 field
+    w.u8(3).u32(5000).u32(1000).u32(42).u8(1); // apartments, rents, class, override
+    w.u32(67).u32(56).f32(324.5f).u32(uint32_t(id)).u8(2).str32("lottexture-test-01").u8(0);
+    w.u32(0xABCD); // business owner (outer version >= 14)
+    w.u32(0).zeros(9).u32(0).u32(0); // apartment base, nine bytes, no sublots, count B
     return w.b;
 }
 
@@ -160,6 +228,17 @@ static void testDecoders() {
         auto cut = ngbh();
         cut.pop_back();
         throws([&] { NeighborhoodInventories::parse(cut); }, "NGBH truncated");
+        // 0xCB (Seasons+): slot version words, the three extra token fields and
+        // the EP ready marker; the record round-trips.
+        const auto cb = NeighborhoodInventories::parse(ngbhCb());
+        check(cb.version == 0xCB && cb.globalVersion == 0xBE && cb.epReady == 7, "NGBH 0xCB header");
+        check(cb.global.singular[0].flags2 == 0 && cb.global.singular[0].inventoryNumber == 7 &&
+                  cb.global.singular[0].unknown == 9,
+              "NGBH 0xCB token fields");
+        check(cb.lots.size() == 1 && cb.lots[0].version == 0xBE && cb.lots[0].id == 11 &&
+                  cb.lots[0].singular[0].data[1] == 300,
+              "NGBH 0xCB slot");
+        check(cb.write() == ngbhCb(), "NGBH 0xCB round-trip");
     }
     {
         const auto s = SimDescription::parse(makeSdsc(7, 0xCDD72499, lifestage::Adult, 1, 8, {10, 48}));
@@ -170,6 +249,19 @@ static void testDecoders() {
         auto v = makeSdsc(7, 1, 0, 0, 0, {});
         v[4] = 0x22;
         throws([&] { SimDescription::parse(v); }, "SDSC other version");
+        // 0x36 (AL): 231 person data words and the BV collectibles tail.
+        const auto al = SimDescription::parse(makeSdsc36());
+        check(al.version == 0x36 && al.personData.size() == 231 && al.age() == lifestage::Adult && al.female(),
+              "SDSC 0x36 person data");
+        check(al.neighborId == 4 && al.guid == 0x724CD298 && al.relations == std::vector<uint32_t>({5, 7}) &&
+                  al.trailer == 0 && al.collectibles == 0x123456789ABCDEF0ull,
+              "SDSC 0x36 tail");
+        check(al.write() == makeSdsc36(), "SDSC 0x36 round-trip");
+        // 0x35 (the E002 template): 230 words, same BV tail.
+        const auto tpl = SimDescription::parse(makeSdscVersion(0x35, 230));
+        check(tpl.version == 0x35 && tpl.personData.size() == 230 && tpl.collectibles == 0x123456789ABCDEF0ull &&
+                  tpl.write() == makeSdscVersion(0x35, 230),
+              "SDSC 0x35");
     }
     {
         const auto f = FamilyRecord::parse(fami(11, 511632, {0x4DAE6810, 0x0DAE6972}));
@@ -178,6 +270,21 @@ static void testDecoders() {
         auto extra = fami(0, 0, {});
         extra.push_back(0);
         throws([&] { FamilyRecord::parse(extra); }, "FAMI trailing bytes");
+        // 0x55 (BV): last played lot, vacation lot, neighborhood and the
+        // business funds.
+        const auto bv = FamilyRecord::parse(fami55());
+        check(bv.version == 0x55 && bv.lot == 124 && bv.lastPlayedLot == 124 && bv.vacationLot == 0,
+              "FAMI 0x55 lots");
+        check(bv.neighborhood == 1 && bv.businessFunds == 4262 && bv.members.size() == 2 &&
+                  bv.members[0] == 0x7518EF1F && bv.albumGuid == 0xD518F8C7,
+              "FAMI 0x55 fields");
+        check(bv.write() == fami55(), "FAMI 0x55 round-trip");
+        // 0x50 (Nightlife): last played lot, no business funds, neighborhood.
+        const auto nl = FamilyRecord::parse(fami50());
+        check(nl.version == 0x50 && nl.lot == 128 && nl.lastPlayedLot == 128 && nl.albumGuid == 0x70D11698 &&
+                  nl.neighborhood == 1 &&
+                  nl.write() == fami50(),
+              "FAMI 0x50");
     }
     {
         const auto t = FamilyTies::parse(ties());
@@ -203,12 +310,28 @@ static void testDecoders() {
         check(l.x == 67 && l.y == 56 && l.lotId == 11 && l.frontEdge == 2 && l.skirtTexture == "lottexture-test-01" &&
                   l.rest.size() == 1,
               "lot info position");
+        // Outer 18 wrapping base 11 (AL): the apartment header, then the
+        // apartment base/sublot tail in rest.
+        const auto apt = LotInfo::parse(lotInfoApartment(127));
+        check(apt.version == 18 && apt.baseVersion == 11 && apt.type == 8 && apt.apartments == 3 &&
+                  apt.rentHigh == 5000 && apt.rentLow == 1000 && apt.lotClass == 42 && apt.lotClassOverride == 1,
+              "lot info 11 apartment header");
+        check(apt.lotId == 127 && apt.rest.size() == 26, "lot info 11 tail");
+        check(apt.write() == lotInfoApartment(127), "lot info 11 round-trip");
     }
     {
         Writer w;
         w.u32(3).str32("N001").u32(1);
         const auto n = NeighborhoodInfo::parse(w.b);
         check(n.prefix == "N001" && n.id == 1, "NID");
+        // Version 0x0A (Seasons+): type, sub-prefix and the later fields.
+        w.b.clear();
+        w.u32(0x0A).str32("E001").u32(1).u32(1).str32("").u32(0).u32(0x10).u32(0x10).u32(0).u8(1).u8(2).u8(3).u8(0);
+        const auto e = NeighborhoodInfo::parse(w.b);
+        check(e.version == 0x0A && e.prefix == "E001" && e.type == 1 && e.subPrefix.empty() && e.downtown == 0 &&
+                  e.unknown7 == 0x10 && e.unknown8 == 0x10 && e.stealth == 0 &&
+                  e.unknownA == std::array<uint8_t, 4>{1, 2, 3, 0},
+              "NID 0x0A");
     }
 }
 

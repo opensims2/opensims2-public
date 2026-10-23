@@ -607,3 +607,437 @@ motivos salvos nos PERS de `N001_Lot11`.
 motor e a unidade por dia foram confirmados na rodada n17
 (`docs/motives-mac.md`); os vieses do `FBA_ScoreInteraction`
 (posse, memória, relacionamento, clima) ficam em 1.
+
+## 17. Versões novas da TTAB: 0x4F–0x51 iguais ao 0x4E; 0x53+ mudou
+
+**Pergunta.** O `objects.package` do Apartment Life tem 1.177 TTABs recusadas
+pelo port ("unsupported version"): 0x4F (149), 0x50 (106), 0x51 (21), 0x53 (7),
+0x54 (440) e 0x55 (454). Quais mantêm o layout do 0x4E e o que mudou depois?
+
+**Método.** Dump dos 1.177 recursos que falham (harness temporário no
+`s2pkg decode-all`, ambiente `S2PKG_TTAB_RAW`) e releitura em Python com o
+layout do `InteractionTable::parse` (em `%TEMP%\opencode\i6e\ttab\`).
+
+**Achados.**
+
+- **0x4F, 0x50 e 0x51 usam o layout 0x4E byte a byte**: os 276 arquivos
+  (149 + 106 + 21) fecham com contagem, entradas e nome final sem sobra.
+- **0x52 não aparece** em nenhum pacote do UC.
+- **0x53+ mudou a entrada.** Cabeçalho igual (nome 64 B, typeCode, versão,
+  `n` u16 em +76); entrada com **54 bytes fixos** — o miolo +24..+53 tem
+  assinatura medida (joinIndex `-1` em +24, uiDisplayType 0 em +28,
+  memoryMultiplier 0,5f em +34, objectType 0 em +38, modelTableId 1 em +42,
+  X em +46 e Y em +50), e os campos +0..+23 se leem como no layout antigo
+  (action, guard, flags, flags2, stringIndex, attCode, attValue, autonomy) —
+  a semântica disso se confirma quando as interações carregarem. Depois vêm
+  **X grupos** de um header de 4 bytes + Y anúncios de 6 bytes (mín, delta,
+  personalidade): **cauda = X × (4 + 6·Y)**. Medido por par (X, Y) → tamanho
+  da entrada: (5,10)→320, (5,14)→440, (5,7)→230, (1,16)→100, (1,8)→52; no
+  E2F o trio (50,10,0) se repete a cada 4 + 6×10 = 64 bytes. O parse fecha
+  exatamente em **555 arquivos** (255/440 dos 0x54 e 300/454 dos 0x55); os
+  7 arquivos 0x53 e as entradas lidas como (X=0, Y=8) ainda não fecham —
+  investigação no `goal-fechar-pendencias.md` (itens 13b/13c).
+
+**Conclusão.** 0x4F–0x51 implementados em `simantics.cpp` (o teste
+`testInteractionTableVersions` cobre 0x4E..0x51 e recusa 0x52/0x53/0x55);
+0x53–0x55 seguem recusados com erro claro até o formato fechar.
+
+## 18. A cauda do 0x54+: dois arrays de grupos de anúncios (RE no exe do PC)
+
+**Pergunta.** A §17 mediu a cauda como "X grupos de 4 bytes + Y anúncios de 6
+bytes" e deixou de fora as entradas lidas como (X=0, Y=8) — 79 ocorrências de
+um mesmo tamanho, com 320 bytes de cauda que o modelo não explica. Qual é a
+unidade real da cauda, e o que o jogo faz com ela?
+
+**Método.** RE do leitor de TTAB no `Sims2EP9RPC.exe` (o build do
+LazyDuchess) com o projeto Ghidra já analisado em `C:\Users\Artur\sims2-re\pcb`
+(o type id `0x54544142` = "TTAB" aparece 15 vezes no binário; o leitor é
+`FUN_0087c720` @ `0x87c720`, na vtable da classe em `0x1222cfc`), mais a
+medição nos 1.177 dumps da §17.
+
+**O que o RE mostra.** `FUN_0087c720` lê a versão do recurso e escolhe o
+layout da entrada:
+
+| versão | layout |
+|---|---|
+| < 0x44 | 1 tabela de motivos |
+| 0x44–0x52 | 7 tabelas de motivos (o layout do 0x4E) |
+| 0x53 | **11** tabelas de motivos |
+| ≥ 0x54 | **46 bytes fixos** (as flags do 0x4E, sem as contagens) e depois **dois arrays** |
+
+No caminho ≥ 0x54 a entrada tem os mesmos campos do 0x4E nos mesmos offsets
+(o RE lê `flags`+`flags2` como um u32 só) e depois:
+
+- **array 1** (`FUN_0087af00`): `[u32 grupos]` e, por grupo, `[u32 m]` + `m`
+  anúncios de 6 bytes;
+- **array 2** (`FUN_0087c610`): `[u32 grupos]` e, por grupo, `[u32 X]` + `X−1`
+  itens de 4 bytes (conteúdo desconhecido) + `[u32 m]` + `m` anúncios de 6
+  bytes.
+
+Os dois arrays usam funções diferentes (`FUN_00879690` e `FUN_00879800`), o
+que explica por que os itens têm formatos diferentes. Os anúncios são lidos
+como 3 u16 — o trio (min, delta, personalidade) do formato antigo.
+
+**Medição no conteúdo.** Com esse layout o leitor fecha **878 dos 894
+arquivos 0x54+** (o modelo da §17 fechava 555 dos 901) e o `decode-all` do
+`objects.package` do Apartment Life passa de **1.208 ok / 901 falhas** para
+**2.090 ok / 19 falhas** nas TTABs. As 19 que restam: 7 são versão **0x53**
+(que tem layout próprio — 11 tabelas — e segue recusado) e 12 têm o `X` do
+array 2 ambíguo (o `X` lido como u32 dá valores absurdos como `0x00050000`,
+mas os bytes são legíveis como `[u16 X][u16 ?]`, o que sugere que o par é
+menor que 4 bytes; os bytes ficam registrados aqui para a próxima rodada).
+
+**Conclusão.** 0x4F–0x51 e 0x54–0x55 implementados em `semantics.cpp` (o
+teste `testInteractionTableVersions` cobre 0x4E..0x51 e 0x54..0x55 e recusa
+0x52/0x53); **0x53** fechou depois, com o mesmo layout e **11** tabelas de
+motivos (§19).
+
+Ferramentas: `ttab_period.py` (período), `ttab_unit2.py`/`ttab_groups2.py`
+(blocos crus), `ttab_head3.py` (cabeçalho), `ttab_model9.py`/`ttab_model15.py`
+(leitores), `pc_scan_ttab.py`/`pc_dis.py`/`pc_dump_fn.py` (RE no exe do PC) em
+`%TEMP%\opencode\i6e\`.
+
+## 19. A TTAB 0x53: o layout do 0x4E com 11 tabelas de motivos
+
+**Pergunta.** Os 7 recursos 0x53 do `objects.package` do Apartment Life (todos
+"untitled tree table", TGI distintos e **conteúdo idêntico**, 2.387 B, `n` = 3)
+seguiam recusados porque o "layout de 11 tabelas" não fechava nos dados. Onde
+ficam as 11 contagens, e o que vem antes e depois delas?
+
+**Método.** Reler os 7 dumps de `%TEMP%\opencode\i6e\ttab\` com o leitor do
+0x4E, variando o número de contagens e conferindo onde a assinatura dos campos
+aparece (joinIndex `-1`, `uiDisplayType` 0, `memoryMultiplier` 0,5f, `objectType`
+0, `modelTableId` 1). O RE do `FUN_0087c720` já dava o número: 7 tabelas para
+0x44..0x52, **11** para 0x53, nenhuma a partir do 0x54.
+
+**Achados.**
+
+- O 0x53 é o **layout do 0x4E com 11 contagens no mesmo lugar**: `action` u16,
+  `guard` u16, **11 contagens u32**, e depois os mesmos campos do 0x4E (flags,
+  flags2, stringIndex, attCode, attValue, autonomy, joinIndex, uiDisplayType,
+  facialAnimation, memoryMultiplier, objectType, modelTableId). No fim, as 11
+  tabelas de anúncios na ordem das contagens (cada anúncio com 6 bytes: mínimo,
+  delta, personalidade).
+- Nos 7 arquivos as três entradas fecham exatamente no nome final (23 B,
+  `u32` 19 + "untitled tree table"): entradas de **570 B** (as duas primeiras,
+  contagens `[16,0,0,0,0,0,0,16,16,16,16]`, 80 anúncios) e de **1.146 B** (a
+  terceira, 11×16 = **176** anúncios). Os anúncios são todos zero neste
+  recurso, o que explica por que a cauda parecia padding.
+- `decode-all` do `objects.package` do AL: **2.090 → 2.097 ok** e **19 → 12
+  falhas** nas TTABs (os 7 de 0x53 fecharam). As 12 restantes: 9 "bad TTAB item
+  count" e 2 "bad TTAB advertisement count" (o `X` do segundo array do 0x54/0x55,
+  lido como `0x00050000`) e 1 "693 trailing bytes"
+  (`0x7FB36E92`, grupo `0x80`).
+
+**Conclusão.** O 0x53 entrou em `InteractionTable::parse` com 11 tabelas;
+`testInteractionTableVersions` cobre 0x4E..0x51 e 0x53 (11 tabelas) e recusa
+0x52 e acima de 0x55 (`semantics.cpp` também passou a recusar > 0x55, que não
+aparece no conteúdo). `%TEMP%` revertido: a validação foi fora do repo.
+
+## 20. As versões das vizinhanças do AL: FAMI 0x55, SDSC 0x36, NGBH 0xCB, NID 10 e lot info 11
+
+**Pergunta.** O `hood-sweep` do bairro E001 (Apartment Life) terminava com 313
+erros e **0 Sims, 0 famílias, 0 lotes**: FAMI 0x55, SDSC 0x36, NGBH 0xCB, NID
+com 20 bytes sobrando e o *lot info* com a versão base 11 (apartamentos) eram
+todos recusados. Quais são os layouts dessas versões, e quais são as de todas
+as vizinhanças do UC?
+
+**Método.** As páginas do SimWiki (FAMI, NGBH/4E474248, DESC/0BF999E7, NID) e o
+`SDescWrapper.cs` do SimPE (a tabela `RelationPosition`, que dá o fim do
+*person data* de cada versão do SDSC), conferidos contra os recursos extraídos
+de 20 pacotes de vizinhança do UC (E001, N001–N003, U001–U003, D001, B001,
+P001, G001, F001/F002, A001, M001, T001, V001, E002), lendo cada arquivo até o
+fim e anotando a versão e o tamanho de cada formato.
+
+**Achados.**
+
+- **FAMI**: 0x4E base; **0x4F** (University) põe um u32 de bairro depois do
+  álbum; **0x50** (Nightlife) põe o lote onde a família foi jogada por último
+  depois do lote (o registro 0x50 do B001 tem esse campo e **não** tem o
+  business funds); **0x51** (OFB) põe o i32 de business funds no fim; **0x55**
+  (BV) põe o lote de férias depois do último lote jogado. As 21 FAMIs do E001
+  (0x55) e o par 0x50/0x51 do B001 fecham byte a byte.
+- **SDSC**: o número de *person data* cresce com os EPs — **170** (0x20), 179
+  (0x22), 195 (0x29), 199 (0x2A), 200 (0x2C), 201 (0x2D, Castaway), 204
+  (0x2E/0x2F, BV), 228 (0x33, FreeTime), **230** (0x35, o template E002) e
+  **231** (0x36, AL); a cauda é `u16 neighborId`, `u32 guid`, `u32 3`, `u32
+  count` + count×u32, `u8 trailer` e, de 0x2E em diante, o `u64` de
+  colecionáveis do BV (`SdscVoyage::UnserializeMem`). A tabela fecha os 234
+  SDSCs do E001 (0x36; 111 do template E002 em 0x36 e 4 em 0x35) e todas as
+  outras vizinhanças do UC.
+- **NGBH**: 0x6F base, **0x70** (Uni) acrescenta o u32 de EP ready marker
+  depois do byte +0xFD; **0xBE** (NL) dá um u32 de versão a cada slot (o global
+  inclusive) e um u32 de número a cada token; **0xC2** (OFB) acrescenta um u16
+  depois das flags do token; **0xCB** (Seasons+) acrescenta outro u16 depois
+  desse número. Os 16 i16 do cabeçalho absorvem o ID do slot global (0); nas
+  versões novas o version word do slot global vem logo depois deles.
+- **NID**: da versão 7 em diante vêm u32 "is downtown" + u32; da 8, outro u32;
+  da 9, as stealth flags u32; da 0x0A, quatro bytes (1, 2, 3, 0 no E001) — os
+  20 bytes que sobravam no E001.
+- **Lot info**: a versão externa 18 envolve a base **11** (AL): depois do campo
+  da versão 8 vêm `u8` número de apartamentos, u32 aluguel alto, u32 aluguel
+  baixo, u32 lot class e `u8` override. A cauda de apartamento (base instance,
+  9 bytes e as listas de sublots, 26 bytes no E001) fica em `rest`.
+
+**Medição.** `hood-sweep` do E001: **234 Sims, 21 famílias, 56 lotes, 1.051
+SREL, 255 ties, 212 characters, 0 erros** (antes 0/0/0/313 erros). N001–N003,
+F001, G001 e os 13 templates do UC decodificam com **0 failed** em todos os
+formatos. `lot-run` do `E001_Lot127` por 60 ticks: 485 objetos salvos, 483 no
+VM, 479 vivos (é um prédio de apartamentos sem família); os únicos erros são os
+já enfileirados 0x7E e Set to Next 38 (item 12), não o carregamento.
+
+**Conclusão.** As versões entraram em `neighborhood.cpp`/`.hpp` e nos writers
+(`neighborhood_write.cpp`), com o teste `test_neighborhood` cobrindo FAMI
+0x50/0x55, SDSC 0x35/0x36, NGBH 0xCB, NID 0x0A e lot info 11 (ida e volta);
+build+ctest **39/39**.
+
+## 21. O 0x7E (Run Script) no exe do PC: o escopo, o nome do objeto e a experiência do modelo "índice → nome" (negativa)
+
+**Pergunta.** O 0x7E e o 0x7D são as duas primitivas que o Mac base 1.0 não tem
+(§2 do `primitives-mac.md`); no exe do PC (o build do AL) as duas estão na
+**classe base** (§(d) do `re-pc-ghidra.md`). O que o 0x7E faz?
+
+**Método.** O handler `FUN_008b9e00` @ `0x8b9e00` lido em assembly (0x8b9e26
+a 0x8b9f2c), o pedido `FUN_00cd3fe0` (que empacota o id) e o executor
+`FUN_00cd3d80` (que procura o recurso no escopo); o censo das 2.876 chamadas do
+AL (`s2pkg prim-usage <Res> 7E`) e uma **implementação experimental** do 0x7E
+medida no AL (com instrumentação temporária, já revertida).
+
+**Achados (assembly, 22/10 — o handler inteiro, `0x8b9e00`–`0x8ba190`).**
+
+- **Layout dos operandos.** O handler recebe o bloco de 16 B dos operandos
+  **deslocado em -4** (`arg1 = &operands[-4]`): os bytes 0-1 são o **id do
+  STR#** (u16), os bytes 2-3 o **id do script** (u16, contado a partir de 1), o
+  byte 4 o **byte de flags**, o byte 5 não é lido, e os três pares (tipo
+  u8, valor u16) estão em 6/7-8, 9/10-11 e 12/13-14 (os mesmos offsets que o
+  `Run Tree by Name` usa para os parâmetros). O alinhamento foi conferido pelo
+  censo do AL: o id do STR# é sempre 304 (0x0130) nos bytes 0-1 ✓ e o byte
+  de flags (18 valores distintos) no byte 4 ✓.
+- **Flags (correção do que foi escrito em 21/10).** O byte é lido **sem
+  máscara**: o `MOV AX, word ptr [ESI+8]` recarrega o byte *antes* dos
+  shifts, então os quatro bits valem — **bit 0** = o segundo pedido (o
+  `.objLua`), **bit 1** = o escopo **privado** (`vfunc 0x108` do objeto),
+  **bit 2** = o escopo **semi-global** (`vfunc 0x114` do objeto) e **bit 3** =
+  o log ", Passing in params where param 0 = " (os parâmetros só vão para
+  o log). Sem bit 1 nem bit 2 o escopo é o **grupo global** (o dono
+  `0x7FD46CD0`). A leitura anterior ("só o bit 0 vale, o ramo Private é
+  código morto") estava errada: o `MOV AX` recarrega o byte sem a máscara
+  do `AND AL,1`.
+- **O pedido.** `FUN_00cd3fe0(this, idDoSTR#, idDoScript, dono, 1, tipo)`
+  empacota o id como `(idDoSTR# << 16) | idDoScript` e o executor
+  (`FUN_00cd3d80`) pergunta ao gerenciador
+  `(**(code **)(*gerenciador + 0xC))(&pedido[5], 0x89B7DC8, &achado, byte[0x25], 0)`
+  — o recurso de tipo 0x89B7DC8 com a referência do pedido, no escopo do dono.
+  **O `Run Tree by Name` (0x1C) usa exatamente o mesmo pedido** (o handler da
+  classe base `FUN_008d3510` chama `FUN_00cd3fe0(0x12F, idDaárvore, dono, 1,
+  0x2026960B)`): o id é o par **(STR# << 16) | id da árvore**, com o STR# do
+  0x1C fixo (0x12F) e o do 0x7E vindo dos dados.
+- **O que o pedido resolve.** O nome do script vem da tabela **STR# do id**,
+  na entrada **idDoScript - 1** (1-based), e a árvore com esse nome é
+  procurada no script do dono. Os dois pedidos são o mesmo par com o pai
+  diferente: `0x2026960B` = o script "definido na descrição" (o log "defined
+  in description") e `0x4D45F8E6` = o "definido num arquivo .objLua" (o log
+  "defined in objLua file"); o segundo só sai quando o bit 0 do byte de flags
+  está ligado.
+- **A tabela STR# 0x130 é "Lua Scripts".** Medido no `objects.package` do AL
+  (grupo global 0x7FD46CD0): o STR# 0x12F se chama **"Call Named Tree prim
+  string set"** (2.823 entradas) e o 0x130 se chama **"Lua Scripts"** (7.233
+  entradas) — é a lista dos scripts Lua do Bon Voyage. E o id do AL bate: a
+  árvore global 0x0137 "NPC - Get Outfit GUID for Type in T[0,1]" é **uma
+  única instrução** (o 0x7E com o id de script 49) e a entrada 49 da
+  tabela "Lua Scripts" é "NPC - Get Outfit GUID for Type in T[0,1]" ✓ (a
+  árvore 0x013A usa o id 50 → "NPC - Get Template GUID for Type in T[0,1]"
+  ✓). **Logo o 0x7E roda um script Lua** (do `.objLua` do objeto), não uma
+  árvore de descrição.
+- **O `run`.** O handler termina com `object->vfunc 0x44(<o nome>)` — o mesmo
+  "rode a árvore/script com este nome" que o 0x7D usa (lá com o valor do
+  parâmetro 0). Os pedidos, portanto, servem ao **log** do jogo (o "defined in
+  description"/"defined in objLua file") e não ao alvo.
+- **Censo do AL.** As 2.876 chamadas têm sempre o id 304 (0x130) nos bytes
+  0-1 e o byte de flags 0xF9 (1.980), 0xFB (379), 0xFD (201), 0xF1 (171),
+  0xF3 (35), 0x03 (24), 0x01 (24), 0xF5 (12), 0xFA (11), 0xF4 (10); o byte 5 é
+  0xFF em 2.801 e 0x00 em 75. O bit 0 (o `.objLua`) está ligado em 2.849 e
+  desligado em 27.
+
+**Experimento (resultado negativo, 21/10).** Implementar o 0x7E como "a árvore cujo
+nome é a entrada (op0-1 − 1) da lista de nomes de árvore do grupo do escopo
+(STR# 0x12F, a mesma do 'Run Tree by Name')" foi medido no AL: o `bhav-sweep`
+passa de 12.894.214 instruções, 18.625 true e 14.126 falhas para **13.175.936,
+19.271 true e 11.604 falhas** (−2.522 falhas: as chamadas deixaram de dar erro
+0x05), **mas** 232 árvores passam a falhar com "Stack overflow (tree has no
+instructions)" (o nome aponta para uma árvore vazia) e 11 com "max stack depth
+exceeded" (recursão). A instrumentação mostrou por quê: 4.994 das 5.000
+primeiras chamadas caem no escopo semi-global do grupo global — que não
+existe (`semiGlobalFor(0x7FD46CD0) = 0`) — e as 6 do escopo global resolvem o
+nome "G - Apartment - Is NIDs Apartment?" sem achar a árvore. O modelo estava
+**errado pelo motivo certo** (a lista é a de árvores, a de scripts Lua é a
+0x130) e foi **descartado**; o port continua recusando o 0x7E (erro 0x05).
+
+**Contraprova no Mac 64 bits (22/10).** O executável x86-64 da Super
+Collection (o Bon Voyage), importado no projeto Ghidra `mac64`, dá o mesmo
+handler do 0x7E em 64 bits (`FUN_10075cc60`): o escopo (os vfuncs 0x220 e 0x238
+lâ o privado e o semi-global, o grupo global `0x7FD46CD0` no resto), o pedido
+`FUN_10120c670(idDoSTR#, idDoScript, dono, 1, 0x2026960B)` e o segundo com
+`0x4D45F8E6`, e o id empacotado do mesmo jeito (`param_3 & 0xffff | param_2 <<
+0x10`) — o que confirma a leitura do PC campo a campo (`re-pc-ghidra.md`
+§(h)).
+
+**Conclusão (22/10).** O RE do 0x7E está **fechado**: o pedido é o mesmo do
+0x1C (id = (STR# << 16) | id), o nome vem da tabela **STR# 0x130 = "Lua
+Scripts"** e o que roda é o **script Lua** do `.objLua` do objeto. O port (e o
+upstream) **não tê interpretador de Lua**, e a árvore de descrição com o
+mesmo nome é o próprio chamador (a global 0x0137 "NPC - Get Outfit GUID for
+Type in T[0,1]" é uma única instrução que chama o próprio nome), então
+rodar a árvore de descrição no lugar seria uma recursão. A recusa (erro
+0x05) é a resposta honesta e **não falta de RE**: o item 12 só fecha com
+isso. O 0x7D (Follow Sim) também recusa: no AL ele tem **1 uso** (a árvore
+0x1001 "Function - Main" do grupo 0x7F649DA1) e o handler dele (`FUN_008b9bd0`)
+peçe o array de objetos e a referência `0x2026960B` (o log ", output result to
+my object array") — o que ele faz com o array continua sem medida, e 1 uso não
+compensa um chute.
+
+**O custo da recusa, medido em 23/10 (`soak-report.md` round 20).** O 0x7E não é só
+conteúdo decorativo: o **pool de NPCs do AL** depende dele. O carro da empregada
+(`Car - MaidMobile`) chama "Sub - Create Driver" → o global 0x185 → "CT - Generate NPC
+From Pool" → o privado "Array - Fill With Valid NPCs" (0x1009), que para cada NPC chama
+o global "NPC - Is Type?" (0x3AD) — uma instrução só, o **0x7E** com o id 48 do STR#
+0x130 — e, com a recusa, **nenhum** NPC é do tipo: o array fica vazio, a árvore volta
+`false` e o `Snap Into` do motorista recebe o stack object 0 (30 resets das peças do
+carro às 07:16, e a empregada nunca chega). O rastro (`OS2_TRACE_NAMED=1` e
+`OS2_TRACE_INV=1`) mostra a cadeia inteira. Fechar isso é o **interpretador de Lua + a
+API que os scripts chamam** (o `.objLua` do objeto): é a maior peça que resta do AL, e
+não é RE — é implementação.
+
+**Fechado em 23/10 (o binding do Lua 5.0).** O `0x7E` agora resolve o nome no STR# 0x130,
+carrega os 627 prelúdios (`*.globalObjLua` de toda a instalação, `Global` primeiro) e roda o
+chunk do script com a API do motor (`src/vm/lua_scripts.cpp`; `docs/lua-scripts.md` tem a
+lista e o que falta). O `CachedNeighbor`/`CachedPerson`/`ObjectManager` são globais do
+motor, e o `GlobalObjManager:getPersonIdFromGUID(guia)` devolve o `nID` do Sim vivo com
+aquele GUID (0 fora do lote). **Medido no `N001_Lot68`, 400 ticks:** o `NPC_IsType` responde
+true para **3 dos 333** candidatos (os vizinhos de família 0 que o `Set to Next 17` percorre),
+a **Kaylynn (#452) chega** (`Interaction - Get Out #3`, às 07:22) e **nenhum** reset de
+SimAntics acontece — antes eram **30 resets do `Snap Into` do carro da empregada às 07:16** e
+a empregada nunca vinha. O `bhav-sweep` do AL vai de **14.093.824 / 23.864 true / 6.385
+falhas** para **14.509.577 / 23.949 true / 6.381 falhas** (as +415.753 instruções são os
+scripts rodando; −4 falhas); o do **base fica igual** (7.234.312 / 11.107 / 2.461 — o base
+não tem `ObjectScripts`, então o `0x7E` continua false). O `0x7D` (Follow Sim) segue false.
+
+## 22. O Set to Next do exe do PC: o censo por tipo e a semântica dos tipos 38 e 39 (22/10)
+
+**Pergunta.** O port recusa os tipos de busca que não implementa (o erro do
+jogo 0x1E, "Search type is invalid"). No AL, quais são e o que cada um faz?
+
+**Método.** O handler do **Set to Next** da classe base (`FUN_00938140` @
+0x938140, o caso 0x1F do despacho `FUN_008CC270`), com os casos **0x26 (tipo
+38)** e **0x27 (tipo 39)** lidos em assembly e no decompilado; o censo do AL
+por tipo (`s2pkg prim-usage <Res> 1F 1 "4=<valor>"` — o tipo é o byte 4 com a
+máscara 0x7F); o censo dos OBJDs do AL (um script sobre o `objects.package`:
+DBPF + QFS + os campos 75/76 no offset `0x40 + 2*i`); e a lista das árvores que
+usam cada tipo (`s2pkg bhav <Res> <grupo> <instância>`).
+
+**Achados.**
+
+- **O censo por tipo (AL, 7.625 instruções do 0x1F).** O byte 4 (o tipo com a
+  máscara 0x7F) vale: 4 (3.009), 1 (1.337), 12 (451), 3 (383), 26 (343), 30
+  (318), 8 (217), 17 (184), 5 (173), 6 (169), 40 (126), 18 (124), 29 (122), 25
+  (89), 9 (75), 0 (63), 41 (56), 36 (53), 14 (45), 28 (38), **38 (36)**, 11
+  (20), 7 (18), 35 (16), 21 (14), 16 (14), 2 (11), 46 (9), **31 (9)**, 23 (7),
+  42 (5), 24 (5), 22 (5), 37 (4), 47 (3), **39 (3)**, 32 (3), 127 (2), 15 (2),
+  45 (1), **34 (1)**, 33 (1), **20 (1)**, **19 (1)**, **13 (1)**. **Correção da
+  leitura de 21/10:** o tipo 31 (cônjuge do temp 0) e o 34 (o grupo de
+  multi-tile vizinho) **já estavam implementados** — o censo antigo somou 52
+  instruções recusadas contando os dois; os que faltavam de fato eram **39
+  instruções**: o tipo 38 (36) e o 39 (3). O port também já implementa 33 e 37.
+  Os únicos que continuam recusados são **13, 19 e 20 (1 uso cada)**.
+- **O tipo 38 é a lista de definições do aplicativo, não a do objeto.** O caso
+  0x26 pega a lista no **vfunc +0x60 do app** (`[ESP+0x34]`; contagem em
+  `+0x28`, elemento em `+0x34(i)`), e o elemento é uma **definição OBJD**: o
+  `vfunc +0x10` dele devolve o acesso aos dados e o `vfunc +0xc` é lido com os
+  índices **0x4B (75)** e **0x4C (76)** — no arquivo, os offsets **0xD6** e
+  **0xD8**. O primeiro é comparado com o **temp 0** (a categoria) e o segundo
+  com o **temp 1** (a subcategoria); um temp negativo casa com qualquer valor,
+  e um temp 0 negativo **não lê** o temp 1 (o `JL` salta os dois testes). O
+  achado é o **GUID** do elemento (`vfunc +0x70`), gravado nos **temps 2 (palavra
+  baixa) e 3 (alta)**; o alvo recebe **índice + 1** (o cursor 1-based da próxima
+  chamada), e a busca começa no valor atual do alvo (0 = do começo), como as
+  outras listas. O decompilado em C fundia os dois campos num só porque o
+  `PUSH 0x4b`/`PUSH 0x4c` ficam em registradores diferentes; o assembly separa
+  (`0x93b263`/`0x93b26e`).
+- **Os campos 75/76 são a categoria e a subcategoria do seletor no AL.** Os
+  rótulos do jogo base (STR# `0x7FE59FD0`/`0xCC` do `objects.package` do base)
+  chamam os dois de "Unused - thumbnail graphic (Sims1)" e "Unused - shadow
+  flags (Sims1)", mas os dados do AL os repurposam. O censo dos 10.952 OBJDs do
+  `objects.package` do AL (10.948 GUIDs únicos; 9.103 com 75/76 ≠ 0) casa com
+  todos os filtros das árvores: **117** = as 20 rádios (`117/1` Techno … `117/20`
+  Radio), **121** = os tokens e badges (`121/1` Toy Making, `121/2` Flower
+  Arranging, `121/3` Robotery, `121/4` Sales, `121/5` Cash Register, `121/6`
+  Stocking, `121/7` Cosmetology, `121/8` Gardening `0x1215A8C1`, `121/9` Fishing,
+  `121/10` Pottery, `121/11` Sewing; `121/5` também "Garden Club Member"),
+  **153** = os acessórios (`153/0` "Accessory - …": Easel - Painting, Glasses -
+  Unisex, Food - Utensil - Cooking Knife, …), **2** = os balcões, **12/7** =
+  "Social - Play - Play Catch". As 36 chamadas do tipo 38 estão em "Get in
+  Temp 0 & 1 - Object GUID by Selector Category" (`0x7F067AA0:2003`), "Radio
+  Station - Get Guids" (`0x7F4F06CA:204C`), "Interaction - Spawn Accessory -
+  TEST" (`0x7F461C50:1004`), "Sub - Boost Badge - Add Tokens"
+  (`0x7FCECBBD:1007`), "CT - Handle Call", "Calls - Handle Call (Pet Work
+  Dialog Array)", "Learned Behavior - Start Tracker - Sim in Temp2", "Call -
+  Check Type Availability", "Calls - Phone Call Available?" e "Badge - All
+  Gold?". O modelo de execução por árvore (conferido na `0x7F067AA0:2003`):
+  `temp0 := param0`, `temp1 := param1`, o alvo (dado 0 do stack object) :=
+  `param2`, Set to Next 38; no achado, `temp0 := temp2`, `temp1 := temp3` (o
+  GUID) e `temp2 :=` o alvo (o índice seguinte).
+- **O tipo 39 é a busca de um vizinho com relacionamento, não uma lista de
+  definições.** O caso 0x27 lê o **temp 0** como um **neighbor ID**
+  (`vfunc +0x4c(0)`); sem vizinho → **erro 0x77** ("Temp0 does not point at a
+  Sim ObjectID."); sem a tabela de relacionamentos dele (`vizinho +0x30`) →
+  **erro 0x68**. A caminhada usa o **próximo neighbor ID** (`app +0x3c(n)`),
+  começando depois do alvo, e grava o ID achado no alvo. Um candidato é pulado
+  se for o próprio vizinho do temp 0 (o `vizinho +0x20` é o ID dele) ou se o
+  **relacionamento vitalício** (`tabela->GetValue(candidato, 1)`, o vfunc
+  `+0x24`; fora da tabela lê 0) for **negativo** — o `TEST AH,AH; JNS` testa o
+  sinal do short. O objeto do candidato é `vizinho +0x3c` (o ID do objeto) →
+  `gerenciador +0xa8` (GetObjectByID); um vizinho **sem objeto no lote**
+  **para** a caminhada (o `break`, não pula). O filtro é o comum, inline:
+  objeto válido, sem as flags de morte (`0x10000`/`0x20000`), `object data 56 &
+  5` = 0 e `object data 107` = 0 (os bits 0 e 2 do byte de flags pulam cada
+  teste) e, com o bit 1, o campo "where" (`u16 9` = `u16 11`). As 3 chamadas
+  estão em "Sub - Find Match" (`0x7FF6C5C8:1006`), "Sub - Chance Cards -
+  Determine" (`0x7F45ED00:100D`) e `0x7F4E0092:100D`.
+
+**No port (22/10).** O tipo 38 entrou em `setToNext` com a lista nova do
+`CodeLibrary` (`definitions()`): o `scanDefinitions` guarda a **primeira
+aparição de cada GUID** (a mesma regra do resto do índice) com os campos
+`0xD6`/`0xD8`, e os OBJDs de um pacote de lote atualizam os campos da entrada
+(o lugar da primeira aparição fica). O tipo 39 usa o mapa de vizinhos
+(`upper_bound`), a tabela de relacionamentos do port (`relationships`, a
+variável 1) e o `neighborSim`; o erro 0x77 ganhou constante e texto no
+`errors.hpp`. **Medição no AL (`bhav-sweep`, `S2PKG_NO_LIGHT=1`): 13.124.187
+instruções, 19.070 true e 13.228 falhas → 13.170.043, 19.087 true e 13.200
+falhas** (as 70 "Search type is invalid" somem; +38 "No stack object present
+(Run Tree by Name)" são as árvores que agora acham um GUID e mandam rodar uma
+árvore num objeto que o lote sintético do sweep não tem — artefato do mesmo
+tipo dos outros erros de stand-in, não uma regressão; +17 true). O jogo base
+fica **igual** (7.234.312 / 11.107 / 2.461). Conferência direta da árvore
+`0x7F067AA0:2003`: com `param0=117, param1=4, param2=0` ela devolve o GUID
+`0x1071F92F` ("Stereo - RadioStation - Pop") nos temps 0/1 e **1041** no temp 2
+(o índice seguinte); com `param1=4` e `param2=1041` devolve falso (a
+subcategoria 4 só tem essa definição); `121/8` devolve `0x1215A8C1` (Gardening)
+e `153/0` um "Accessory". Build + ctest **39/39**.
+
+**O filtro comum (22/10).** O handler do PC aplica `object data 56 & 5` (sem a
+flag 0x01) e `object data 107` (sem a flag 0x04) em **todos** os tipos de
+objeto — é o `0x38`/`0x6b` no `vfunc +0x34` do elemento, nos casos 0x26/0x27 e
+nos demais. O `eligible` do port só tinha o "where"; agora aplica os dois,
+gateados pelo **layout de BV** (`nodeVersion != 0`): na versão de nó 0 o dado 56
+é o "dry clothes value" do jogo base e o 107 não existe. No nó 0 o jogo zera o
+`SetToNextParam` (as flags), mas a árvore do jogo base foi escrita para o filtro
+dele, então manter os dois fora é o que preserva o comportamento do base.
+Medição: o sweep do AL fica **igual** (13.170.043 / 19.087 / 13.200 — no lote
+sintético do sweep os objetos têm os dois dados zerados, então o filtro só
+aparece no jogo de verdade); o jogo base fica igual por construção (as árvores
+de nó 0 não passam pelo filtro). Build + ctest 39/39, com o teste do tipo 39
+(relacionamento vitalício, data 107 e data 56) no `test_hood_vm`, que usa o
+layout de BV (`nodeVersion = 1`) para o filtro valer.
+
+**Conclusão.** Os tipos 38 e 39 e o filtro comum estão fechados. Ficam só
+**13, 19 e 20** (1 uso cada).

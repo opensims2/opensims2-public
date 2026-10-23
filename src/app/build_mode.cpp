@@ -381,7 +381,7 @@ void BuildMode::holdObjectAt(int x, int y, int direction, bool autoRotate) {
     for (const auto& part : last_.parts)
         if (vm::Object* o = vm_.object(part.id)) {
             o->data[vm::objdata::Direction] = int16_t(direction_);
-            o->position = {float(part.tile.x) + 0.5f, float(part.tile.y) + 0.5f, part.tile.level};
+            vm_.setPosition(*o, {float(part.tile.x) + 0.5f, float(part.tile.y) + 0.5f, part.tile.level});
         }
     dirty_ = true;
 }
@@ -390,7 +390,7 @@ void BuildMode::swapTwin() {
     for (vm::ObjectId part : vm::groupOf(vm_, held_)) {
         view_.forget(part);
         if (vm::Object* o = vm_.object(part))
-            o->position = vm::Position{};
+            vm_.setPosition(*o, vm::Position{});
     }
     std::swap(held_, twin_);
     swapped_ = !swapped_;

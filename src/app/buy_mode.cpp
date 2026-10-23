@@ -38,24 +38,34 @@ constexpr uint32_t kFunctionSort = 0x0A00, kFunctionButtons = 0xA000, kRoomSort 
 constexpr uint32_t kCatalog = 0x898F42CD, kCollapsed = 0x1000, kPrev = 0x1004, kNext = 0x1005;
 constexpr uint32_t kToolHand = 0xCC607031, kToolEyedropper = 0xCC607032, kToolDesign = 0xCC607030, kUndo = 0xCC607033,
                    kRedo = 0xCC607034, kDayNight = 0xCC607035, kTopDown = 0xCC607036;
-// The collapsed grid (window 0x1006 of 0x1000: 176 x 100). The columns,
-// rows and margins are the collections window's constants on the same
-// panel (kCollapsedColumns=3, kCollapsedRows=2, margins 2 and 6;
-// inferred: the catalog grid's own constants are in code).
-constexpr float kGridX = 52, kGridY = 19, kGridW = 176, kGridH = 100;
-constexpr int kColumns = 3, kRows = 2;
+// The grid's slot within the catalog's window (0x1006 of 0x1000: 176 x 100;
+// the expanded 0x2006 of 0x2000: 176 x 196). The cells come at the window's
+// own (52, 19) corner with no extra inset, 44 px on a 48 px pitch (measured:
+// the first cell at 589 over the window's 537, the rows at 591, 639 and 687
+// at 1280x720; the script's own margins are the collections window's,
+// inferred, and go unused here).
+constexpr float kGridX = 52, kGridY = 19;
+constexpr float kCell = 44, kCellStep = 48, kCellInX = 0, kCellInY = 8, kThumb = 40, kCellRadius = 8;
+constexpr int kRows = 2;
+// The original keeps the catalog's left part and stretches its right one
+// (docs/buy-build-mac.md §1.6): the window's left cap at 537, the first cell
+// at x 589, and the strip's own last cap at the right edge — 20 px wide with
+// its right at width-30 — with the cells' block (44 px plates on a 48 px
+// pitch, its 4 last px of slack) filling up to it (13 columns at 1280 wide,
+// 3 at 800).
+constexpr float kGridLeft = 589, kStripRight = 29, kCapW = 20;
+int catalogColumns(float width) {
+    const float capL = width - kStripRight - kCapW; // the cap's left edge
+    return std::max(1, int((capL - (kGridLeft - 1) + kCellInX) / kCellStep));
+}
 // The expanded catalog (window 0x2000, opened by "Expandir" 0x1009 and shut
-// by "Recolher" 0x2009): its grid window 0x2006 is 176 x 196. The script has
-// no constants for it; 4 rows keep the thumbnails the collapsed size (3
-// columns, the same margins; inferred).
+// by "Recolher" 0x2009): 4 rows on the same pitch.
 constexpr uint32_t kExpanded = 0x2000, kExpandedPrev = 0x2004, kExpandedNext = 0x2005, kExpand = 0x1009,
                    kCollapse = 0x2009;
-constexpr float kExpandedGridH = 196;
 constexpr int kExpandedRows = 4;
 // The expanded catalog's top over the panel's origin; the collapsed one's
 // is 96 (window 0x1000).
 constexpr float kExpandedTop = 9;
-constexpr float kMarginX = 2, kMarginY = 6;
 
 // The room buttons 0xC100-0xC900: room sort bit of each (§1.4).
 constexpr std::array<int, 9> kRoomBits = {3, 5, 4, 6, 7, 1, 0, 8, 2};
@@ -293,11 +303,11 @@ void BuyMode::preview(const vm::Placement& p) {
         if (!o)
             continue;
         o->data[vm::objdata::Direction] = int16_t(p.direction);
-        o->position = {float(part.tile.x) + 0.5f, float(part.tile.y) + 0.5f, part.tile.level};
+        vm_.setPosition(*o, {float(part.tile.x) + 0.5f, float(part.tile.y) + 0.5f, part.tile.level});
         vm_.setContainer(*o, p.ok ? p.container : vm::ObjectId(0), int16_t(p.ok && p.container ? p.slot : -1));
         if (p.ok && p.container)
             if (const vm::Object* c = vm_.object(p.container))
-                o->position = c->position;
+                vm_.setPosition(*o, c->position);
     }
 }
 
@@ -389,7 +399,7 @@ void BuyMode::holdAt(int x, int y, int direction, bool autoRotate) {
             for (vm::ObjectId part : vm::groupOf(vm_, held_)) {
                 view_.forget(part);
                 if (vm::Object* o = vm_.object(part))
-                    o->position = vm::Position{};
+                    vm_.setPosition(*o, vm::Position{});
             }
             std::swap(held_, twin_);
         }
@@ -906,7 +916,7 @@ std::vector<const CatalogEntry*> BuyMode::items() const {
     if (sort_ == Sort::Function && function_ >= 0) {
         std::vector<const CatalogEntry*> out;
         for (const auto* e : catalog_.byFunction(function_))
-            if (subSort_ == 0 || (e->functionSubSort & subSort_))
+            if (subSort_ <= 0 || (e->functionSubSort & subSort_))
                 out.push_back(e);
         return out;
     }
@@ -958,30 +968,48 @@ UiScreen BuyMode::screen(int width, int height) {
 
     // Joined to the puck as the live panel is (live_ui.cpp, inferred): the
     // panel's hidden rectangle captioned "4bdeffaa:bl" over the puck's
-    // window 0x4BDEFFAA, the puck at the bottom left.
+    // window 0x4BDEFFAA, the puck at the client's left edge (measured at
+    // both 800x600 and 1280x720, docs/buy-build-mac.md §1.6).
     const UiElement& puck = puck_.roots.front();
-    // The catalog follows the open sort area (inferred: the script keeps it
-    // at x 447 under the collections' layout): it starts where that area
-    // ends, the dark green strip runs up to it and the end cap gives way
-    // to the catalog's own joint ("center piece").
+    // The catalog keeps the script's place (x 447, over the strip's own end)
+    // and the strip its own width there; the end cap closes the bar at the
+    // sort area's end when there is nothing to show (the top-level sorts),
+    // and, with the catalog open, sits at its own place over the window's
+    // left, where its grey closes the seam between the bar and the window
+    // (532..536 over the window's cap at 537, measured at 800x600 and
+    // 1280x720; docs/buy-build-mac.md §1.6; as Build mode's panel,
+    // build_mode_panel.cpp). The joint ("center piece", 0x4CC48AA8) draws
+    // nowhere in either state (the script hides it and the seam shows only
+    // the cap's own greys), so it keeps its script's place and flag.
+    const auto list = items();
+    const bool showCatalog = !list.empty();
     {
         UiElement& r = panel_.roots.front();
         const UiElement* sortArea = r.child(sort_ == Sort::Function ? kFunctionSort : kRoomSort);
         const int right = sortArea ? sortArea->area()[2] : 447;
-        if (UiElement* c = r.child(kCatalog)) {
-            const auto a = c->area();
-            c->set("area", area(right, a[1], right + (a[2] - a[0]), a[3]));
+        if (UiElement* e = r.child(0x4CC48AA4)) { // the end cap: at the sort's end, or over the window's left
+            const auto a = e->area();
+            const int x = showCatalog ? 447 : right;
+            e->set("area", area(x, a[1], x + (a[2] - a[0]), a[3]));
         }
-        if (UiElement* g = r.child(0x4CC48AA6)) {
-            const auto a = g->area();
-            g->set("area", area(a[0], a[1], right, a[3]));
+        // The bar's repeat piece (0x4CC48AA6): the script's own 265..447 with
+        // the catalog open, reaching the end cap at the sort's own end when
+        // there is nothing to show — the original's grey runs, in a stretched
+        // gradient, all the way to the cap's piece (measured at 800x600,
+        // docs/buy-build-mac.md §1.6).
+        if (UiElement* t = r.child(0x4CC48AA6)) {
+            const auto a = t->area();
+            const int end = showCatalog ? 447 : right;
+            t->set("area", area(a[0], a[1], std::max(a[0], end), a[3]));
         }
-        if (UiElement* e = r.child(0x4CC48AA4))
-            e->set("winflag_visible", "no");
     }
     const UiElement& root = panel_.roots.front();
     const auto pa = puck.area();
-    const float puckX = 8, puckY = float(height) - float(pa[3] - pa[1]);
+    // The original's pod sits 3 px above the script's own reach to the
+    // client's foot: the pill's art at 516 and 396 at 720 and 600 over the
+    // 519/399 of the script's place (measured in Buy, Build and Live alike;
+    // docs/buy-build-mac.md §1.6).
+    const float puckX = 0, puckY = float(height) - float(pa[3] - pa[1]) - 3;
     float x0 = puckX, y0 = puckY - 137;
     if (const UiElement* a = puck.child(0x4BDEFFAA))
         if (const UiElement* b = root.child(0x0000AAAA))
@@ -998,6 +1026,11 @@ UiScreen BuyMode::screen(int width, int height) {
         hk.buttonState[e] = byFunction ? 1 : 2;
     if (const UiElement* e = root.child(kTabCollections)) // collections are Bon Voyage's
         hk.hide.insert(e);
+    if (const UiElement* e = root.child(kCatalog)) // out with nothing to show (as Build mode's panel)
+        (showCatalog ? hk.show : hk.hide).insert(e);
+    // The end cap draws in both states (its own place over the window's left
+    // with the catalog open, the sort's end without: set above), and the
+    // joint stays as the script leaves it (hidden).
     if (const UiElement* e = root.child(kToolHand))
         hk.buttonState[e] = (held_ && !heldNew_) || (tool_ == Tool::Hand && !held_) ? 2 : 1;
     if (const UiElement* e = root.child(kToolEyedropper))
@@ -1020,7 +1053,8 @@ UiScreen BuyMode::screen(int width, int height) {
             if (const UiElement* panel = fs->child(uint32_t(0xB000 + (function_ + 1) * 0x100)))
                 for (const auto& b : panel->children) {
                     const int n = int(b.id() >> 4 & 0xF);
-                    if (subSortOf(function_ + 1, n) == subSort_ && n != 1)
+                    const int ss = subSortOf(function_ + 1, n);
+                    if (ss >= 0 && ss == subSort_ && n != 1)
                         hk.buttonState[&b] = 2;
                 }
     }
@@ -1041,13 +1075,12 @@ UiScreen BuyMode::screen(int width, int height) {
             }
         }
     }
-    // The grid: thumbnails of the current page with their prices, the
-    // selected one marked, the ones the family cannot afford dimmed
-    // (UpdateAffordability, §1.5: frame 0, inferred).
-    const auto list = items();
+    // The grid: the current page's cells, the selected one marked, the ones
+    // the family cannot afford dimmed (UpdateAffordability, §1.5: frame 0,
+    // inferred). The list was taken above, for the catalog's show state.
+    const int columns = catalogColumns(float(width));
     const int rows = expanded_ ? kExpandedRows : kRows;
-    const float gridH = expanded_ ? kExpandedGridH : kGridH;
-    const size_t perPage = size_t(kColumns * rows);
+    const size_t perPage = size_t(columns * rows);
     const size_t pages = std::max<size_t>(1, (list.size() + perPage - 1) / perPage);
     page_ = std::min(page_, pages - 1);
     const int64_t funds = vm::noCharge(vm_) ? INT64_MAX : vm::funds(vm_); // no charge: nothing is too dear
@@ -1057,41 +1090,195 @@ UiScreen BuyMode::screen(int width, int height) {
     if (catalog)
         if (const UiElement* other = catalog->child(expanded_ ? kCollapsed : kExpanded))
             hk.hide.insert(other);
-    auto drawGrid = [&](UiScreen& s, float x, float y) {
-            const float cw = (kGridW - kMarginX * (kColumns - 1)) / kColumns;
-            const float ch = (gridH - kMarginY * float(rows - 1)) / float(rows);
-            const float thumb = std::min(cw, ch - 12);
-            for (size_t i = 0; i < perPage && page_ * perPage + i < list.size(); ++i) {
-                const CatalogEntry* e = list[page_ * perPage + i];
-                const float cx = x + kGridX + float(i % kColumns) * (cw + kMarginX);
-                const float cy = y + kGridY + float(i / kColumns) * (ch + kMarginY);
-                const float tx = cx + (cw - thumb) / 2;
-                if (e == selected_ || e == hovered_) {
-                    UiQuad q;
-                    q.x0 = tx - 2, q.y0 = cy - 2, q.x1 = tx + thumb + 2, q.y1 = cy + thumb + 2;
-                    q.color = e == selected_ ? std::array<float, 4>{0.6f, 1, 0.6f, 0.7f}
-                                             : std::array<float, 4>{1, 1, 1, 0.45f};
-                    s.quads.push_back(q);
-                }
-                if (const RgbaImage* img = catalog_.thumbnail(*e)) {
-                    UiQuad q;
-                    q.image = img;
-                    q.x0 = tx, q.y0 = cy, q.x1 = tx + thumb, q.y1 = cy + thumb;
-                    if (e->price > funds)
-                        q.color = {0.45f, 0.45f, 0.45f, 0.8f};
-                    s.quads.push_back(q);
-                }
-                cells.push_back({{tx, cy, tx + thumb, cy + ch}, e});
+    // The catalog's right side rides its stretched end: the strip's last cap
+    // lands with its right edge at width-30 with the middle piece filling up
+    // to it, and the next and expand buttons over the cap — their right edge
+    // 5 px in (their glyphs at width-61; measured at 800x600 and 1280x720,
+    // docs/buy-build-mac.md §1.6). The left cap and the prev arrow keep the
+    // script's place.
+    if (UiElement* cat = panel_.roots.front().child(kCatalog))
+        if (UiElement* win = cat->child(expanded_ ? kExpanded : kCollapsed)) {
+            // The original's window sits 5 px right of the script's own slot:
+            // its left cap at 537 while the bar's own pieces keep the
+            // anchors' place (the sort's buttons at 361, the end cap at 588
+            // and the join at 85, measured at 800x600 and 1280x720;
+            // docs/buy-build-mac.md §1.6). The window carries its pieces, so
+            // the cap/middle/arrows ride the same 5 px and the conversions
+            // below move with the base. The window's own left in the script
+            // is 0, so the 5 is set outright (never compounded frame over
+            // frame).
+            const auto wa = win->area();
+            win->set("area", area(5, wa[1], 5 + (wa[2] - wa[0]), wa[3]));
+            const float base = x0 + 452; // the catalog window's left on the client
+            const float capL = float(width) - kStripRight - kCapW;
+            const uint32_t d = expanded_ ? 0x2000 : 0x1000;
+            if (UiElement* e = win->child(d | 2)) { // middle: up to the cap
+                const auto a = e->area();
+                e->set("area", area(a[0], a[1], int(capL - base), a[3]));
             }
+            if (UiElement* e = win->child(d | 3)) { // cap: at the end
+                const auto a = e->area();
+                e->set("area", area(int(capL - base), a[1], int(capL + kCapW - base), a[3]));
+            }
+            for (uint32_t k : {d | 5, d | 9}) // next and expand/collapse: over the cap
+                if (UiElement* e = win->child(k)) {
+                    const auto a = e->area();
+                    e->set("area", area(int(capL + 5 - base) - (a[2] - a[0]), a[1], int(capL + 5 - base), a[3]));
+                }
+        }
+
+    // The cells' plates, drawn by the game in code (the grid window has no
+    // art of its own): a 44 px rounded rect (radius 8) of the fill over a
+    // 2 px navy edge; the hovered and the selected one take a ring in its
+    // place — 1 px of the dark outer line, 2 px of the colour and 1 px of
+    // navy over the fill (sampled from the original's screenshots: the
+    // fill (143,153,216), the navy (5,6,113), the rings' outer line
+    // (43,50,127), the hover (204,214,255), the selection (0,255,0)).
+    auto makePlate = [&](const uint8_t* ring) {
+        constexpr int S = 4; // supersampled, for the rounded corners
+        RgbaImage img;
+        img.width = uint32_t(kCell), img.height = uint32_t(kCell);
+        img.pixels.assign(size_t(kCell) * size_t(kCell) * 4, 0);
+        for (int py = 0; py < int(kCell); ++py)
+            for (int px = 0; px < int(kCell); ++px) {
+                float r = 0, g = 0, b = 0;
+                int n = 0;
+                for (int sy = 0; sy < S; ++sy)
+                    for (int sx = 0; sx < S; ++sx) {
+                        const float qx = float(px) + (float(sx) + 0.5f) / S, qy = float(py) + (float(sy) + 0.5f) / S;
+                        const float ix = std::min(qx, kCell - qx), iy = std::min(qy, kCell - qy);
+                        float d = std::min(ix, iy);
+                        if (ix < kCellRadius && iy < kCellRadius) {
+                            const float dx = kCellRadius - ix, dy = kCellRadius - iy;
+                            d = kCellRadius - std::sqrt(dx * dx + dy * dy);
+                        }
+                        if (d < 0)
+                            continue; // outside the plate
+                        float cr = 143, cg = 153, cb = 216;
+                        if (!ring) {
+                            if (d < 2)
+                                cr = 5, cg = 6, cb = 113;
+                        } else if (d < 1) {
+                            cr = 43, cg = 50, cb = 127;
+                        } else if (d < 3) {
+                            cr = ring[0], cg = ring[1], cb = ring[2];
+                        } else if (d < 4) {
+                            cr = 5, cg = 6, cb = 113;
+                        }
+                        r += cr, g += cg, b += cb, ++n;
+                    }
+                uint8_t* o = &img.pixels[(size_t(py) * size_t(kCell) + size_t(px)) * 4];
+                if (n)
+                    o[0] = uint8_t(r / n), o[1] = uint8_t(g / n), o[2] = uint8_t(b / n), o[3] = uint8_t(255 * n / (S * S));
+            }
+        frameImages_.push_back(std::make_unique<RgbaImage>(std::move(img)));
+        return frameImages_.back().get();
+    };
+    static const uint8_t kRingHover[3] = {204, 214, 255}, kRingSelect[3] = {0, 255, 0};
+    const RgbaImage* plateNormal = makePlate(nullptr);
+    const RgbaImage* plateHover = makePlate(kRingHover);
+    const RgbaImage* plateSelect = makePlate(kRingSelect);
+
+    // The page slider (window 0x1008 of 0x1000): a 12 px tall rounded bar
+    // under the cells — its left edge at the first column's left, its right
+    // one px short of the block's end (the navy closing at 1207 with the
+    // paper at 1208, measured) — and a knob of the page's share of the
+    // block at its head (the knob 6 px wider than that fill; measured: 304
+    // px of fill for a 26 of 53 list); the original draws it at the cells'
+    // block, not at the script's own rectangle (4 px in and a row lower;
+    // its corners 4 px — the outermost column spans 8 of the 12 rows — the
+    // track (135,163,152) under a 1 px navy edge on its top and bottom with
+    // the fill reaching the ends, the knob (174,189,255) under 2 px of navy
+    // on all its edges with a (157,171,241) inner on the ends).
+    auto makeSlider = [&](float w, bool knob) {
+        constexpr int S = 4;
+        RgbaImage img;
+        img.width = uint32_t(w), img.height = 12;
+        img.pixels.assign(size_t(w) * 12 * 4, 0);
+        // A point inside a rounded rectangle (its corners at rr).
+        auto inRound = [](float qx, float qy, float x0, float x1, float y0, float y1, float rr) {
+            if (qx < x0 || qx > x1 || qy < y0 || qy > y1)
+                return false;
+            const float dx = std::max(std::max(x0 + rr - qx, qx - (x1 - rr)), 0.0f);
+            const float dy = std::max(std::max(y0 + rr - qy, qy - (y1 - rr)), 0.0f);
+            return dx * dx + dy * dy <= rr * rr;
         };
+        for (int py = 0; py < 12; ++py)
+            for (int px = 0; px < int(w); ++px) {
+                float r = 0, g = 0, b = 0;
+                int n = 0;
+                for (int sy = 0; sy < S; ++sy)
+                    for (int sx = 0; sx < S; ++sx) {
+                        const float qx = float(px) + (float(sx) + 0.5f) / S, qy = float(py) + (float(sy) + 0.5f) / S;
+                        if (!inRound(qx, qy, 0, w, 0, 12, 4))
+                            continue;
+                        float cr = 135, cg = 163, cb = 152;
+                        if (knob) {
+                            cr = 174, cg = 189, cb = 255;
+                            if (!inRound(qx, qy, 2, w - 2, 2, 10, 2))
+                                cr = 5, cg = 6, cb = 113;
+                            else if (!inRound(qx, qy, 3, w - 3, 2, 10, 2))
+                                cr = 157, cg = 171, cb = 241;
+                        } else if (!inRound(qx, qy, 0, w, 1, 11, 3))
+                            cr = 5, cg = 6, cb = 113;
+                        r += cr, g += cg, b += cb, ++n;
+                    }
+                uint8_t* o = &img.pixels[(size_t(py) * size_t(w) + size_t(px)) * 4];
+                if (n)
+                    o[0] = uint8_t(r / n), o[1] = uint8_t(g / n), o[2] = uint8_t(b / n), o[3] = uint8_t(255 * n / (S * S));
+            }
+        frameImages_.push_back(std::make_unique<RgbaImage>(std::move(img)));
+        return frameImages_.back().get();
+    };
+    auto drawGrid = [&](UiScreen& s, float x, float y) {
+        for (size_t i = 0; i < perPage && page_ * perPage + i < list.size(); ++i) {
+            const CatalogEntry* e = list[page_ * perPage + i];
+            const float cx = x + kGridX + kCellInX + float(i % columns) * kCellStep;
+            const float cy = y + kGridY + kCellInY + float(i / columns) * kCellStep;
+            UiQuad q;
+            q.image = e == selected_ ? plateSelect : e == hovered_ ? plateHover : plateNormal;
+            q.x0 = cx, q.y0 = cy, q.x1 = cx + kCell, q.y1 = cy + kCell;
+            s.quads.push_back(q);
+            if (const RgbaImage* img = catalog_.thumbnail(*e)) {
+                UiQuad t;
+                t.image = img;
+                t.x0 = cx + 2, t.y0 = cy + 2, t.x1 = cx + 2 + kThumb, t.y1 = cy + 2 + kThumb;
+                if (e->price > funds)
+                    t.color = {0.45f, 0.45f, 0.45f, 0.8f};
+                s.quads.push_back(t);
+            }
+            cells.push_back({{cx, cy, cx + kCell, cy + kCell}, e});
+        }
+        const float ty = y + kGridY + kCellInY + float(rows - 1) * kCellStep + kCell + 4;
+        const float trackX = x + kGridX + kCellInX;
+        const float trackW = float(columns) * kCellStep - 5;
+        const float blockW = float(columns) * kCellStep - 4; // the cells' block
+        const float fill = list.empty() ? blockW
+                                        : std::clamp(float(int(blockW * float(perPage) / float(list.size()))), 4.0f, trackW - 6);
+        const float knobW = fill + 6;
+        UiQuad track;
+        track.image = makeSlider(trackW, false);
+        track.x0 = trackX, track.y0 = ty, track.x1 = trackX + trackW, track.y1 = ty + 12;
+        s.quads.push_back(track);
+        const float head = pages > 1 ? float(page_) / float(pages - 1) : 0;
+        UiQuad knob;
+        knob.image = makeSlider(knobW, true);
+        knob.x0 = trackX + head * (trackW - knobW), knob.y0 = ty, knob.x1 = knob.x0 + knobW, knob.y1 = ty + 12;
+        s.quads.push_back(knob);
+    };
+    // The original shows no prev arrow on the first page (measured at 800x600
+    // and 1280x720; the row's start sits without it).
+    if (collapsed && page_ == 0)
+        if (const UiElement* e = collapsed->child(expanded_ ? kExpandedPrev : kPrev))
+            hk.hide.insert(e);
+    // The original's grid sits at the window's own left (the script's slot
+    // plus the window's 1 px, above) and 4 px higher (measured at 1280x720
+    // against the script's own place).
     place(root, x0, y0, hk);
     if (auto r = rectOf(collapsed))
-        drawGrid(out, (*r)[0], (*r)[1]);
-    for (const auto& [r, e] : cells) {
-        text(money(e->price), r[0] - 8, r[3] - 13, r[2] - r[0] + 16, 13, "center",
-             e->price > funds ? "(150,40,40)" : "(5,6,113)");
+        drawGrid(out, (*r)[0], (*r)[1] - 4);
+    for (const auto& [r, e] : cells)
         targets_.push_back({r, Action::Item, int(std::find(list.begin(), list.end(), e) - list.begin())});
-    }
     // Targets.
     target(root.child(kTabFunction), Action::Tab, 0);
     target(root.child(kTabRoom), Action::Tab, 1);
@@ -1103,7 +1290,8 @@ UiScreen BuyMode::screen(int width, int height) {
     target(root.child(kUndo), Action::Undo, 0);
     target(root.child(kRedo), Action::Redo, 0);
     if (collapsed) {
-        target(collapsed->child(expanded_ ? kExpandedPrev : kPrev), Action::Prev, 0);
+        if (page_ > 0) // no prev arrow on the first page (as the original)
+            target(collapsed->child(expanded_ ? kExpandedPrev : kPrev), Action::Prev, 0);
         target(collapsed->child(expanded_ ? kExpandedNext : kNext), Action::Next, 0);
         target(collapsed->child(expanded_ ? kCollapse : kExpand), Action::Expand, 0);
     }
@@ -1138,9 +1326,52 @@ UiScreen BuyMode::screen(int width, int height) {
         if (e->clsid() == "GZWinBMP" || e->clsid() == "GZWinGen" || e->clsid().rfind("0x", 0) == 0)
             solid_.push_back(r);
 
-    // The catalog description of the item under the mouse, above the
-    // panel (inferred placement).
-    if (const CatalogEntry* e = hovered_) {
+    // The hovered item's price tip (§), over the cell's top edge (the
+    // original's: a 47 x 21 plate at (cell - (2, 10)), a 1 px navy edge
+    // (30,43,113) over the beige fill (223,207,145), the text in black).
+    for (const auto& [r, e] : cells)
+        if (e == hovered_) {
+            const int S = 4, W = 47, H = 21;
+            RgbaImage img;
+            img.width = W, img.height = H;
+            img.pixels.assign(size_t(W) * H * 4, 0);
+            for (int py = 0; py < H; ++py)
+                for (int px = 0; px < W; ++px) {
+                    float cr = 0, cg = 0, cb = 0;
+                    int n = 0;
+                    for (int sy = 0; sy < S; ++sy)
+                        for (int sx = 0; sx < S; ++sx) {
+                            const float qx = float(px) + (float(sx) + 0.5f) / S, qy = float(py) + (float(sy) + 0.5f) / S;
+                            const float ix = std::min(qx, float(W) - qx), iy = std::min(qy, float(H) - qy);
+                            float d = std::min(ix, iy);
+                            if (ix < 3 && iy < 3) {
+                                const float dx = 3 - ix, dy = 3 - iy;
+                                d = 3 - std::sqrt(dx * dx + dy * dy);
+                            }
+                            if (d < 0)
+                                continue;
+                            float r = 223, g = 207, b = 145;
+                            if (d < 1)
+                                r = 30, g = 43, b = 113;
+                            cr += r, cg += g, cb += b, ++n;
+                        }
+                    uint8_t* o = &img.pixels[(size_t(py) * W + size_t(px)) * 4];
+                    if (n)
+                        o[0] = uint8_t(cr / n), o[1] = uint8_t(cg / n), o[2] = uint8_t(cb / n), o[3] = uint8_t(255 * n / (S * S));
+                }
+            frameImages_.push_back(std::make_unique<RgbaImage>(std::move(img)));
+            UiQuad q;
+            q.image = frameImages_.back().get();
+            q.x0 = r[0] - 2, q.y0 = r[1] - 10, q.x1 = r[0] + 45, q.y1 = r[1] + 11;
+            out.quads.push_back(q);
+            text(money(e->price), r[0] - 1, r[1] - 8, 45, 17, "center", e->price > funds ? "(150,40,40)" : "(1,1,1)");
+            break;
+        }
+
+    // The catalog description of the item bought and held, above the panel
+    // (inferred placement; the original shows it with an item selected —
+    // its screenshots — not on a bare hover).
+    if (const CatalogEntry* e = held_ && selected_ ? selected_ : nullptr) {
         UiElement& dm = description_.roots.front();
         if (UiElement* n = dm.child(0x4000))
             n->set("area", "(158,36,456,120)"), n->set("wrapped", "yes");
@@ -1234,9 +1465,9 @@ bool BuyMode::press(simd_float2 p) {
             break;
         case Action::Tab:
             sort_ = t.value == 0 ? Sort::Function : Sort::Room;
-            function_ = room_ = -1, subSort_ = roomFunction_ = 0, page_ = 0;
+            function_ = room_ = -1, subSort_ = -1, roomFunction_ = 0, page_ = 0;
             break;
-        case Action::Function: function_ = t.value, subSort_ = 0, page_ = 0; break;
+        case Action::Function: function_ = t.value, subSort_ = -1, page_ = 0; break;
         case Action::SubSort: subSort_ = t.value, page_ = 0; break;
         case Action::Room: room_ = t.value, roomFunction_ = 0, page_ = 0; break;
         case Action::RoomFunction:
@@ -1246,16 +1477,17 @@ bool BuyMode::press(simd_float2 p) {
             break;
         case Action::Back:
             if (sort_ == Sort::Function)
-                function_ = -1, subSort_ = 0;
+                function_ = -1, subSort_ = -1;
             else
                 room_ = -1, roomFunction_ = 0;
             page_ = 0;
             break;
         case Action::Expand: {
             // The first item shown stays on the page.
-            const size_t first = page_ * size_t(kColumns * (expanded_ ? kExpandedRows : kRows));
+            const int cols = catalogColumns(float(canvasW_));
+            const size_t first = page_ * size_t(cols * (expanded_ ? kExpandedRows : kRows));
             expanded_ = !expanded_;
-            page_ = first / size_t(kColumns * (expanded_ ? kExpandedRows : kRows));
+            page_ = first / size_t(cols * (expanded_ ? kExpandedRows : kRows));
             sound(expanded_ ? "ui_panel_expand" : "ui_panel_collapse");
             break;
         }

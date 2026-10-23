@@ -3,6 +3,7 @@
 
 #include "wants_cmds.hpp"
 #include "budget.hpp"
+#include "data_index.hpp"
 
 #include "formats/binreader.hpp"
 #include "formats/dbpf.hpp"
@@ -31,7 +32,10 @@ fs::path resRoot(const fs::path& pkg) {
     for (auto p = fs::absolute(pkg).parent_path(); p.has_relative_path(); p = p.parent_path())
         if (p.filename() == "Res")
             return p;
-    throw std::runtime_error("the lot is not under a TSData/Res directory");
+    // A lot in the player's folder: the game's data from $OS2_DATA (as autonomy and pie).
+    if (const char* data = std::getenv("OS2_DATA"); data && std::filesystem::is_directory(std::filesystem::path(data) / "TSData/Res"))
+        return std::filesystem::path(data) / "TSData/Res";
+    throw std::runtime_error("the lot is not under a TSData/Res directory (set OS2_DATA to data/game)");
 }
 
 const char* aspirationName(int v) {
@@ -123,7 +127,8 @@ void printSim(vm::VM& m, int16_t id, bool history) {
 }
 
 int cmdWants(const fs::path& lotFile, const std::string& simQuery, long ticks, bool history) {
-    ResourceIndex index(resRoot(lotFile));
+    ResourceIndex index;
+    s2pkgAddInstallation(index, resRoot(lotFile));
     vm::CodeLibrary code(&index);
     DbpfPackage pkg(lotFile);
     const Lot lot = Lot::load(pkg);

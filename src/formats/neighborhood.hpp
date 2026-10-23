@@ -59,6 +59,11 @@ namespace hood {
 // order) and one final byte (+0xFD: a bool, read as byte != 0, that only the
 // constructor (0), Read and Write touch in the base game and in BV; 1 in the
 // shipped neighborhoods, 0 in the tutorial). docs/save-mac.md §8, §9.4.
+// The later versions (the SimWiki's NGBH page) change three things, all
+// measured over the UC neighborhoods: 0x70 (Uni) adds a u32 EP ready marker
+// after that byte; 0xBE (NL) adds a version word to every slot (the global
+// one included) and a u32 number to every token; 0xC2 (OFB) adds a u16 after
+// the token flags; 0xCB (Seasons and later) adds a u16 after that number.
 // An inventory (cTSInventory::Read/Write, BV 0x497040/0x4949a0) is the
 // counted tokens then the singular ones (u32 count, then tokens); a token
 // is u32 GUID, u16 flags, u32 count and that many u16 values. The singular
@@ -67,12 +72,16 @@ struct InventoryToken {
     uint32_t guid = 0;
     uint16_t flags = 0;
     std::vector<uint16_t> data;
+    uint16_t flags2 = 0;          // >= 0xC2
+    uint32_t inventoryNumber = 0; // >= 0xBE
+    uint16_t unknown = 0;         // >= 0xCB
 };
 
 struct Inventory {
     uint32_t id = 0; // lot ID, family number or neighbor ID (0 for the global one)
     std::vector<InventoryToken> counted;  // first list
     std::vector<InventoryToken> singular; // second list (memories)
+    uint32_t version = 0; // >= 0xBE: the slot's own version word
 };
 
 struct NeighborhoodInventories {
@@ -81,9 +90,11 @@ struct NeighborhoodInventories {
     uint32_t tilesX = 128, tilesY = 128;  // +0x34/+0x38 (TileCountX/Y)
     std::string regionType = "Temperate";
     std::array<int16_t, 16> data{}; // the neighborhood data (data owner 0x22)
+    uint32_t globalVersion = 0;     // >= 0xBE: the global slot's version word
     Inventory global;
     std::vector<Inventory> lots, families, neighbors;
     bool flagFD = false; // +0xFD, kept and unused
+    uint32_t epReady = 0; // >= 0x70: the EP ready marker after the flag
 
     static NeighborhoodInventories parse(std::span<const uint8_t> data);
     std::vector<uint8_t> write() const; // neighborhood_write.cpp: parse's inverse
@@ -102,12 +113,18 @@ struct NeighborhoodInventories {
 
 // ---------------------------------------------------------------------------
 // SDSC: one neighbor. Version 0x20 (base game):
-//   u32 (always 0x70), u32 version, u32 (0x1C-0x20), 170 x i16 person data
-//   (labels in objects.package STR# 0x7FE59FD0/0xC8, the same array the VM
+//   u32 (always 0x70), u32 version, u32 (0x1C-0x20), the person data (170 i16
+//   in 0x20; the count grows with the EPs: 179 (0x22), 195 (0x29), 199
+//   (0x2A), 200 (0x2C), 201 (0x2D), 204 (0x2E/0x2F), 228 (0x33), 230 (0x35,
+//   the E002 template), 231 (0x36);
+//   labels in objects.package STR# 0x7FE59FD0/0xC8, the same array the VM
 //   keeps), u16 neighbor ID, u32 GUID (the character's OBJD), u32 (always 3),
 //   u32 count + count x u32 neighbor IDs this Sim has a relationship with
 //   (an SREL from this Sim to each), u8 (1 for family members, 2 for the
-//   rest; confirmar o que foi inferido).
+//   rest; confirmar o que foi inferido) and, from 0x2E on, the u64 of the BV
+//   collectibles (SimPE's SdscVoyage::UnserializeMem). The person data and
+//   the relation offset of each version are in SimPE's SDescWrapper
+//   (RelationPosition) and were measured over the UC neighborhoods.
 constexpr size_t kSdscPersonDataCount = 170;
 
 namespace sdsc { // person data fields (STR# 0xC8)
@@ -127,12 +144,15 @@ const char* lifeStageName(int16_t age); // "baby", ..., "elder", or "?"
 
 struct SimDescription {
     uint32_t unknown0 = 0, version = 0, unknown2 = 0;
-    std::array<int16_t, kSdscPersonDataCount> personData{};
+    // 170 entries in 0x20 and more with the EPs (see above); kept sized by
+    // the version so a record round-trips.
+    std::vector<int16_t> personData = std::vector<int16_t>(kSdscPersonDataCount);
     uint16_t neighborId = 0;
     uint32_t guid = 0;
     uint32_t unknown3 = 0;
     std::vector<uint32_t> relations;
     uint8_t trailer = 0;
+    uint64_t collectibles = 0; // version >= 0x2E (BV): SimPE's SdscVoyage
 
     static SimDescription parse(std::span<const uint8_t> data);
     std::vector<uint8_t> write() const;
@@ -152,15 +172,26 @@ struct SimDescription {
 // The name (#0) and description (#1) are in the STR# whose instance is the
 // family number. Families 0x7FFE/0x7FFF hold the townies and service NPCs
 // (their STR# hold an unrelated surname).
+// From 0x4F on a u32 neighborhood ID follows the album; from 0x50 on a u32
+// lot (the last one the family was played on, the Best of Business 0x50 record
+// has it) follows the lot; 0x51 adds a i32 business funds at the end and 0x55
+// (BV) adds the u32 vacation lot after that lot. The SimWiki's FAMI page gives
+// the chain 78/79/81/84/85; the measured gates above differ only in giving the
+// last-played lot to 0x50 (data-findings.md section 20), where the 21 E001
+// families (0x55) and the B001 pair (0x50/0x51) close byte for byte.
 struct FamilyRecord {
     uint32_t version = 0, unknown = 0;
     uint32_t lot = 0;
+    uint32_t lastPlayedLot = 0; // >= 0x51
+    uint32_t vacationLot = 0;   // >= 0x55
     uint32_t simGroupId = 0;
     int32_t funds = 0;
     uint32_t friends = 0;
     uint32_t flags = 0;
     std::vector<uint32_t> members; // GUIDs
     uint32_t albumGuid = 0;
+    uint32_t neighborhood = 0;  // >= 0x4F
+    int32_t businessFunds = 0;  // >= 0x51
 
     static FamilyRecord parse(std::span<const uint8_t> data);
     std::vector<uint8_t> write() const;
@@ -248,6 +279,12 @@ struct Relationship {
 // (> 5), u32 count + count x f32 heights (> 3), f32 road height (> 6), u32
 // (> 7); then u32 x, u32 y, f32 height offset, i32 lot ID, u8 front edge,
 // u32-length skirt texture name and the rest (one byte in every shipped lot).
+// Apartment Life wraps base version 11 (outer version 18), which adds, right
+// after the version 8 field, the apartment header (u8 number of apartments,
+// u32 rent range high, u32 rent range low, u32 lot class value and the u8
+// override flag; the SimWiki's DESC page). The apartment base/sublot tail
+// after the business owner stays in `rest` for now; the 56 E001 records close
+// with it byte for byte (data-findings.md section 20).
 struct LotInfo {
     uint16_t version = 0, baseVersion = 0;
     uint32_t width = 0, depth = 0;
@@ -257,6 +294,11 @@ struct LotInfo {
     std::vector<float> heights;
     float roadHeight = 0;
     uint32_t baseUnknown = 0;
+    uint8_t apartments = 0;       // base version 11
+    uint32_t rentHigh = 0;        // base version 11
+    uint32_t rentLow = 0;         // base version 11
+    uint32_t lotClass = 0;        // base version 11
+    uint8_t lotClassOverride = 0; // base version 11
     uint32_t x = 0, y = 0;
     float heightOffset = 0;
     int32_t lotId = 0;
@@ -288,13 +330,21 @@ struct LotInfo {
 };
 
 // NID (0xAC8A7A2E): u32 version, u32-length prefix ("N001"), u32 ID, and from
-// version 5 on u32 type and u32-length sub-prefix.
+// version 5 on u32 type and u32-length sub-prefix; from 7 on a u32 "is
+// downtown" and a u32 unknown; from 8 on another u32; from 9 on the u32
+// stealth flags; from 0x0A on four bytes (1, 2, 3, 0 in E001). E001's version
+// 10 closes exactly with the SimWiki's layout (data-findings.md section 20).
 struct NeighborhoodInfo {
     uint32_t version = 0;
     std::string prefix;
     uint32_t id = 0;
     uint32_t type = 0;
     std::string subPrefix;
+    uint32_t downtown = 0;  // >= 7
+    uint32_t unknown7 = 0;  // >= 7
+    uint32_t unknown8 = 0;  // >= 8
+    uint32_t stealth = 0;   // >= 9
+    std::array<uint8_t, 4> unknownA{}; // >= 0x0A
 
     static NeighborhoodInfo parse(std::span<const uint8_t> data);
 };

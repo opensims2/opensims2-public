@@ -70,6 +70,7 @@ void restoreState(VM& vm, Object& o, const LotObjects::State& s) {
     for (size_t i = 0; i < s.data.size() && i < o.data.size(); ++i)
         o.data[i] = s.data[i];
     o.data[objdata::ObjectId] = o.id;
+    vm.noteRoomChanged(o.id); // a loaded object is told its room (the pass that used to scan for it)
     vm.noteContainer(o);
     if (o.person && s.personRead)
         for (size_t i = 0; i < s.personData.size() && i < o.person->data.size(); ++i)

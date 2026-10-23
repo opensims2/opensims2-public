@@ -1568,8 +1568,10 @@ void tickOverlayEvents(VM& vm) {
                         if (Object* x = vm.object(part); x && x->position.inWorld())
                         {
                             x->position.x += dx, x->position.y += dy;
-                            if (vm.world)
+                            if (vm.world) {
                                 x->data[objdata::Room] = vm.world->room(VM::tileOf(*x));
+                                vm.noteRoomChanged(x->id);
+                            }
                         }
                 }
             if (ended)

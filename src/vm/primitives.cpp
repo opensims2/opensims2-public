@@ -11,8 +11,10 @@
 #include "placement.hpp"
 #include "errors.hpp"
 #include "sound.hpp"
+#include "lua_scripts.hpp"
 
 #include "formats/binreader.hpp"
+#include "formats/log_once.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -225,9 +227,13 @@ std::array<int16_t, kPersonDataCount>& neighborData(VM& vm, int16_t id, Neighbor
 //   neighbors whose relationship from the neighbor in temp 0 has variable 3
 //   non-zero / variable 0 > temp 1 / variable 1 & temp 1 non-zero, 11 lot
 //   ID; 24 visible object within temp 0 tiles (view.cpp); 10 career: false.
-//   32 owner of the object in temp 0 (ownership.hpp).
-// Not done: 13 (nearest person), 33 (hauntable), 37 (want category) and the
-// rest of the base game's types up to 37.
+//   32 owner of the object in temp 0 (ownership.hpp);
+//   19/20 the next/previous object of the multi-tile group of the object in
+//   temp 0 (the module's list per group, walked in its order);
+//   13 the nearest person to the person in temp 0, then the next nearest after
+//   the target, with its distance and direction in temps 4 and 5.
+// Not done: none of the base game's types up to 37 (the AL's 38/39 and the
+// species ones 40-51 are above).
 Exit setToNext(Context& c) {
     const auto& o = c.instruction.operands;
     const uint32_t guid = le32(&o[0]);
@@ -263,22 +269,52 @@ Exit setToNext(Context& c) {
     // object, which an object Remove Object Instance queued to die at the
     // end of the tick is not (ValidateObject: object flag 0x10000 or 0x20000;
     // the reaper found the Sim it had just turned into an urn and reaped
-    // it again), and with flag 0x02 object data u16 9 equal to u16 11. The
-    // object data 56 bit 0 and 107 tests are Bon Voyage's (§ Set to Next).
+    // it again), without flag 0x01 an object data 56 bit 0 or 2 set (the
+    // game's "disabled" bits; the doc's BV filter names bit 0), without flag
+    // 0x04 an object data 107 other than 0 (the flag is not printed by the
+    // editor), and with flag 0x02 object data u16 9 equal to u16 11.
     // Node version 0 had neither the flags nor the filter (SetToNextParam
     // zeroes them on load): the base game's trees keep other bytes there
     // (the debug tombstone's "New Baby" filtered every object out, so no
-    // one cared for the baby).
-    const bool where = c.instruction.nodeVersion != 0 && o.size() > 12 && (o[8] & 0x02);
+    // one cared for the baby). That version is also where object data 56 is
+    // the "dry clothes value" and 107 does not exist, so the two data tests
+    // are the BV layout's, like the flags.
+    const bool bvFilter = c.instruction.nodeVersion != 0 && o.size() > 12;
+    const bool where = bvFilter && (o[8] & 0x02);
     const int16_t whereField = where ? int16_t(le16(&o[9])) : 0, whereValue = where ? int16_t(le16(&o[11])) : 0;
     auto eligible = [&](const Object& x) {
         if (dying(c.vm, x.id))
             return false;
+        if (bvFilter && !(o[8] & 0x01) && (x.data[56] & 5) != 0)
+            return false;
+        if (bvFilter && !(o[8] & 0x04) && x.data[107] != 0)
+            return false;
         return !where || (whereField >= 0 && size_t(whereField) < x.data.size() && x.data[size_t(whereField)] == whereValue);
     };
+    // The person data 186 "species" (0 = the human; only Bon Voyage has the
+    // field, so in the base game it reads 0): the Set to Next types 40-45
+    // (0x28-0x2D) are the people and 46-51 (0x2E-0x33) the neighbors, each
+    // taking one species; the type 1 (the people) and the type 5 (the neighbor
+    // ID) take only the humans (docs/primitives-mac.md §0x1F).
+    int16_t speciesLo = 0, speciesHi = 0;
     switch (type) {
-    case 5: return nextNeighbor([](int16_t, const Neighbor&) { return true; });                       // neighbor id
+    case 1: case 5: case 40: case 46: speciesLo = 0, speciesHi = 0; break;
+    case 41: case 47: speciesLo = INT16_MIN, speciesHi = -1; break;
+    case 42: case 48: speciesLo = 1, speciesHi = 2; break;
+    case 43: case 49: speciesLo = 1, speciesHi = 1; break;
+    case 44: case 50: speciesLo = 2, speciesHi = 2; break;
+    case 45: case 51: speciesLo = 3, speciesHi = 3; break;
+    default: break;
+    }
+    auto speciesOk = [&](const std::array<int16_t, kPersonDataCount>& pd) {
+        const int16_t s = pd[persondata::Species];
+        return s >= speciesLo && s <= speciesHi;
+    };
+    switch (type) {
+    case 5: return nextNeighbor([&](int16_t id, Neighbor& n) { return speciesOk(neighborData(c.vm, id, n)); }); // neighbor id
     case 7: return nextNeighbor([guid](int16_t, const Neighbor& n) { return n.guid == guid; });      // neighbor of type
+    case 46: case 47: case 48: case 49: case 50: case 51: // the neighbors of one species (0x2E-0x33)
+        return nextNeighbor([&](int16_t id, Neighbor& n) { return speciesOk(neighborData(c.vm, id, n)); });
     case 17: {                                                                                        // neighbor of family in temp 0
         const int16_t family = c.thread.temps[0];
         return nextNeighbor([&](int16_t id, Neighbor& n) { return neighborData(c.vm, id, n)[persondata::FamilyNumber] == family; });
@@ -470,7 +506,10 @@ Exit setToNext(Context& c) {
     uint32_t ofGuid = 0; // types 4 and 18
     switch (type) {
     case 0: matches = [](const Object&) { return true; }; break;                   // object
-    case 1: matches = [](const Object& x) { return x.person.has_value(); }; break;  // person
+    case 1:                                                                        // person (the humans only)
+    case 40: case 41: case 42: case 43: case 44: case 45:                          // the people of one species
+        matches = [&](const Object& x) { return x.person.has_value() && speciesOk(x.person->data); };
+        break;
     case 2: matches = [](const Object& x) { return !x.person; }; break;             // non-person
     case 4:                                                                         // object of type
     case 18: {                                                                      // object of type GUID in temp 0/1
@@ -523,27 +562,196 @@ Exit setToNext(Context& c) {
     case 27:                                                                        // utility using object
         matches = [](const Object& x) { return x.data[76] != 0 || x.data[77] != 0; };
         break;
+    case 33:                                                                        // hauntable (the definition's field 0x1C)
+        matches = [](const Object& x) { return x.definition && x.definition->field(0x1C) != 0; };
+        break;
     case 37: { // want category in temp 0: OBJD field 0x2F (offset 0x9E), as the want trees' categories (BV TrySetToNext 0x25)
         const int16_t category = c.thread.temps[0];
         matches = [category](const Object& x) { return x.definition && int16_t(x.definition->field(0x9E)) == category; };
         break;
+    }
+    case 38: { // object definition of the selector category in temp 0 and the
+               // subcategory in temp 1: OBJD fields 75/76, which the Apartment
+               // Life content uses ("Stereo - RadioStation - Pop" 117/4,
+               // "Token - Badge - Gardening" 121/8, accessories 153/0-4). The
+               // binary walks its definition list by index (the first
+               // appearance of each GUID, as the OBJD scan here), keeps the
+               // next index (1-based) in the target and writes the GUID to
+               // temps 2 (low) and 3 (high). A negative temp matches anything
+               // (temp 0 negative: the subcategory is not read).
+        const int16_t category = c.thread.temps[0], subcategory = c.thread.temps[1];
+        const auto& defs = c.vm.code().definitions();
+        for (int32_t at = current < 1 ? 0 : current; at < int32_t(defs.size()); ++at) {
+            const auto& d = defs[size_t(at)];
+            if (category >= 0 && (d.category != category || (subcategory >= 0 && d.subcategory != subcategory)))
+                continue;
+            if (at >= 0x7FFF)
+                throw gameError(err::ValueOutOfRange, "Set to Next 38: definition " + std::to_string(at + 1));
+            c.set(owner, data, int16_t(at + 1));
+            c.thread.temps[2] = int16_t(uint16_t(d.guid));
+            c.thread.temps[3] = int16_t(uint16_t(d.guid >> 16));
+            return Exit::True;
+        }
+        return none();
+    }
+    case 39: { // next neighbor the neighbor in temp 0 has a relationship with:
+               // its relationship table's variable 1 (lifetime) >= 0, skipping
+               // the neighbor itself and the ones the common filter rejects
+               // (dying, object data 56 bits 0/2, data 107, the "where" field).
+               // The walk stops at a neighbor with no object in the lot, as
+               // the binary does (its object id is 0).
+        const int16_t from = c.thread.temps[0];
+        if (!c.vm.neighbor(from))
+            throw gameError(err::NoSimInTemp0, "Set to Next 39: temp 0 is not a neighbor id: " + std::to_string(from));
+        auto& neighbors = c.vm.neighbors;
+        for (auto it = neighbors.upper_bound(current); it != neighbors.end(); ++it) {
+            const int16_t id = it->first;
+            if (id == from)
+                continue;
+            const auto* rel = relationFromTemp0(id);
+            if (rel && rel->size() > 1 && (*rel)[1] < 0)
+                continue;
+            const Object* sim = c.vm.neighborSim(id);
+            if (!sim)
+                break;
+            if (!eligible(*sim))
+                continue;
+            return found(id);
+        }
+        return none();
+    }
+    case 13: { // nearest person to the person in temp 0 ("Reaction - Banter", its only user)
+        // PC case 0xD @ 0x9393b2: the anchor is GetObjectByID(temp 0) (missing:
+        // error 0x17) and must be a person (QueryInterface cITSPerson
+        // 0x5A69D3D5; else error 0x1C). The candidates are the people, nearest
+        // to the anchor first (the module's spatial query; here the module's
+        // list order breaks the ties), each passing the common filter (dying,
+        // object data 56 bits 0/2, 107, the "where" pair; 0x9394f0..0x939591).
+        // The found one goes to the target, its distance and direction from the
+        // anchor to temps 4 and 5 (the binary rounds a float distance,
+        // 0x00e5c948, and an angle, 0x00c3e7b0, at 0x9395ec..0x93960d; here the
+        // same whole-tile distance and 0-7 face as Get Distance To / Get
+        // Direction To). The target is the cursor: the next call goes on from
+        // the person after it, 0 starts at the nearest (the binary's target-0
+        // path only writes zeroed temps; the only user enumerates from 0 and
+        // the label is "the nearest person"). The anchor itself is not a
+        // candidate (inferred: a Sim does not banter with itself).
+        const int16_t anchorId = c.thread.temps[0];
+        const Object* anchor = c.vm.object(anchorId);
+        if (!anchor)
+            throw gameError(err::NoObject, "Set to Next 13: object " + std::to_string(anchorId) + " does not exist");
+        if (!anchor->person)
+            throw gameError(err::NotAPerson, "Set to Next 13");
+        auto distanceTo = [&](const Object& x) {
+            const double dx = x.position.x - anchor->position.x, dy = x.position.y - anchor->position.y;
+            const double dz = 10.0 * (x.position.level - anchor->position.level);
+            return long(std::trunc(std::sqrt(dx * dx + dy * dy + dz * dz)));
+        };
+        std::vector<std::pair<long, const Object*>> people;
+        for (const auto& entry : c.vm.objectList())
+            if (const Object* x = c.vm.object(entry.second); x && x->person && x->id != anchorId && eligible(*x))
+                people.emplace_back(distanceTo(*x), x);
+        std::stable_sort(people.begin(), people.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+        size_t at = 0;
+        if (current != 0) {
+            const auto found = std::find_if(people.begin(), people.end(),
+                                            [&](const auto& p) { return p.second->id == current; });
+            at = found == people.end() ? people.size() : size_t(found - people.begin()) + 1;
+        }
+        if (at >= people.size())
+            return none();
+        const Object& next = *people[at].second;
+        c.set(owner, data, next.id);
+        c.thread.temps[4] = int16_t(std::min(32767L, people[at].first));
+        c.thread.temps[5] = int16_t(directionOf(next.position.x - anchor->position.x,
+                                               next.position.y - anchor->position.y));
+        return Exit::True;
+    }
+    case 19:   // next object of the multi-tile group of the object in temp 0
+    case 20: { // previous one: "Set to Next" / "Set to Prev" (0x7FFD4F2D:2006/2007, the fireplace's group)
+        // PC 0x939b00.. (type 0x13) and 0x939d81.. (0x14): GetObjectByID(temp
+        // 0) through the object module (+0x74); missing, or for 19 one queued
+        // to die (object flags 0x10000/0x20000), writes 0 to the target and
+        // fails. Then the module's list of the anchor's group, keyed by the
+        // object's +0xe4 (+0x14c: one list per group, none for an object in
+        // no group), walked in the module's list order, forward (19) or
+        // backward (20), skipping objects that are gone or dying. Both
+        // wrappers live in the fireplace's group and a fireplace's parts are
+        // a multi-tile group; the modular stairs' delete handler (0x9234f0)
+        // walks the same list to take a staircase's other parts, which a
+        // per-level or per-room list would not give (it would take the other
+        // stairs with it). Nothing else uses the two types: the AL and the
+        // base game have one use of each, those wrappers.
+        const int16_t anchorId = c.thread.temps[0];
+        const Object* anchor = c.vm.object(anchorId);
+        if (!anchor || (type == 19 && dying(c.vm, anchorId))) {
+            c.set(owner, data, 0);
+            return Exit::False;
+        }
+        const ObjectId lead = multiTileGroup(*anchor);
+        std::vector<const Object*> group;
+        for (const auto& entry : c.vm.objectList()) {
+            const Object* x = c.vm.object(entry.second);
+            if (x && x->data[objdata::LeadTileObjectId] == lead)
+                group.push_back(x);
+        }
+        // No group (the only object under that data): the binary's key is
+        // negative and it returns false with the target left as it is.
+        if (group.size() < 2)
+            return Exit::False;
+        const auto alive = [&](size_t i) { return !dying(c.vm, group[i]->id); };
+        if (current == 0) {
+            if (type == 19) {
+                for (size_t i = 0; i < group.size(); ++i)
+                    if (alive(i))
+                        return found(group[i]->id);
+            } else {
+                for (size_t i = group.size(); i-- > 0;)
+                    if (alive(i))
+                        return found(group[i]->id);
+            }
+            return Exit::False;
+        }
+        // The current target must be in the list: the binary ends there with
+        // (target != 0), i.e. true and the target left as it is.
+        const auto at = std::find_if(group.begin(), group.end(), [&](const Object* x) { return x->id == current; });
+        if (at == group.end())
+            return Exit::True;
+        c.set(owner, data, 0);
+        const size_t i = size_t(at - group.begin());
+        if (type == 19) {
+            for (size_t k = i + 1; k < group.size(); ++k)
+                if (alive(k))
+                    return found(group[k]->id);
+            return Exit::False;
+        }
+        // The backward walk starts two places before the current one (0x939f04
+        // DEC EBX, then 0x939f12 LEA EBP,[EBX-1]): the object just before it
+        // is skipped, a real off-by-one in the game.
+        if (i >= 2)
+            for (size_t k = i - 1; k-- > 0;)
+                if (alive(k))
+                    return found(group[k]->id);
+        return Exit::False;
     }
     default:
         if (type <= 37)
             throw VMError("Set to Next: search type " + std::to_string(type) + " not implemented");
         throw gameError(err::BadSearchType, "Set to Next type " + std::to_string(type));
     }
-    // People (1) and a definition's instances (4, 18) are their own
-    // vectors in TrySetToNext (GetNextPerson BV 0xe2521c; the selector's
-    // instances): the one after the current one, which must be in it (a
-    // current object that is not, as "Dartboard - Shoo Sims" leaves the
-    // dartboard there between people, ends the search: false); 0 starts
-    // at the first. Their order: Object::appendOrder.
-    if (type == 1 || type == 4 || type == 18) {
+    // People (1, and the species ones 40-45) and a definition's instances
+    // (4, 18) are their own vectors in TrySetToNext (GetNextPerson BV
+    // 0xe2521c; the selector's instances): the one after the current one,
+    // which must be in it (a current object that is not, as "Dartboard -
+    // Shoo Sims" leaves the dartboard there between people, ends the search:
+    // false); 0 starts at the first. Their order: Object::appendOrder.
+    const bool people = type == 1 || (type >= 40 && type <= 45);
+    if (people || type == 4 || type == 18) {
         // The candidates by ID, as a walk over every object would meet them:
         // the people, or the objects of the GUID (both kept by the VM).
         std::vector<const Object*> v;
-        for (const ObjectId id : type == 1 ? c.vm.people() : c.vm.objectsOfGuid(ofGuid))
+        for (const ObjectId id : people ? c.vm.people() : c.vm.objectsOfGuid(ofGuid))
             if (const Object* x = c.vm.object(id); x && matches(*x))
                 v.push_back(x);
         std::sort(v.begin(), v.end(), [](const Object* a, const Object* b) { return a->appendOrder < b->appendOrder; });
@@ -832,6 +1040,7 @@ Exit createObjectInstance(Context& c) {
         return Exit::False;
     }
     x->data[objdata::Room] = -1; // out of the world while its Init runs
+    c.vm.noteRoomChanged(x->id);
     if (materialSource)
         x->materials = materialSource->materials;
     if (neighbor && x->person) {
@@ -909,7 +1118,7 @@ Exit createObjectInstance(Context& c) {
                              y->position.level, y->data[objdata::Direction]);
     } else if (at) {
         if (Object* y = c.vm.object(created))
-            y->position = *at;
+            c.vm.setPosition(*y, *at);
     }
     if (c.vm.initCreatedObjects && (flags & 0x12))
         if (auto it = c.vm.threads.find(created); it != c.vm.threads.end() && !it->second.stack.empty()) {
@@ -949,8 +1158,8 @@ Exit runTreeByName(Context& c) {
     const auto& o = c.instruction.operands;
     const uint8_t mode = o[5];
     const uint16_t flags = le16(&o[2]);
-    if (mode > 2)
-        throw VMError("Run Tree by Name: mode " + std::to_string(mode) + " not implemented");
+    if (mode > 3)
+        throw gameError(err::BadNamedTreeParameter, "Run Tree by Name: mode " + std::to_string(mode));
 
     auto& code = c.vm.code();
     const Object* owner = c.vm.object(c.frame.codeOwner);
@@ -981,17 +1190,27 @@ Exit runTreeByName(Context& c) {
         throw gameError(err::NoStackObject, "Run Tree by Name");
     const Object& target = c.stackObject();
     std::optional<uint16_t> tree;
+    uint32_t treeGroup = 0;
     for (uint32_t group : {target.group, target.semiGroup, kGlobalGroup}) {
         if (!group)
             continue;
         // Only trees a call opcode reaches (not the private trees of a library).
         tree = code.behaviorByName(group, name);
-        if (tree && c.vm.resolveTree(target, *tree).first == group)
+        if (tree && c.vm.resolveTree(target, *tree).first == group) {
+            treeGroup = group;
             break;
+        }
         tree.reset();
     }
     if (!tree)
         return Exit::False;
+    // OS2_TRACE_NAMED=1: the named trees the lot's trees call (a mode 2 push
+    // that does not resolve looks exactly like a tree that runs and does
+    // nothing).
+    static const bool traceNamed = std::getenv("OS2_TRACE_NAMED") != nullptr;
+    if (traceNamed)
+        std::fprintf(stderr, "named tree: mode %u index %zu name \"%s\" stack object %d -> group %08X instance %u\n",
+                     unsigned(mode), index, name.c_str(), int(c.frame.stackObject), treeGroup, tree ? unsigned(*tree) : 0u);
 
     std::array<int16_t, 8> args{};
     if (flags & 0x20)
@@ -1002,6 +1221,25 @@ Exit runTreeByName(Context& c) {
     else
         std::copy_n(c.thread.temps.begin(), args.size(), args.begin());
     const ObjectId targetId = target.id;
+    if (mode == 3) {
+        // Mode 3: the tree of the object whose GUID is in the temps 0/1 (the
+        // low word in temp 0), run at once like the mode 0. The Mac's
+        // TryCallNamedTree and the PC's base class (FUN_008D3510, case 3) agree
+        // on this: the GUID is looked up in the world, the object gives its
+        // tree (its Main) and the tree runs in my stack, with the same
+        // arguments the other modes get. A GUID no object has is the game's
+        // error 0x7A ("You sent me a crappy GUID, please fix it.").
+        const uint32_t guid = uint16_t(c.thread.temps[0]) | uint32_t(uint16_t(c.thread.temps[1])) << 16;
+        const auto ids = c.vm.objectsOfGuid(guid);
+        const Object* obj = ids.empty() ? nullptr : c.vm.object(ids.front());
+        const uint16_t objTree = obj ? c.vm.functionTree(*obj, 1) : 0;
+        if (!objTree)
+            throw gameError(err::CrappyGuid, "Run Tree by Name: mode 3");
+        return runOneTickTree(c.vm, c.thread.temps, c.thread.me, obj->id, obj->id, objTree, args,
+                              c.thread.actionStrings)
+                   ? Exit::True
+                   : Exit::False;
+    }
     if (mode == 0)
         return runOneTickTree(c.vm, c.thread.temps, c.thread.me, targetId, targetId, *tree, args, c.thread.actionStrings)
                    ? Exit::True
@@ -1376,6 +1614,13 @@ Exit manageInventory(Context& c) {
     };
     Inventory& inventory = c.vm.inventory(kind, id);
     auto& tokens = counted ? inventory.counted : inventory.singular;
+    // OS2_TRACE_INV=1: every Manage Inventory call (which inventory, which
+    // operation and GUID, how many tokens before it) — the NPC pool's tokens
+    // and the service cars' drivers are behind these.
+    static const bool traceInv = std::getenv("OS2_TRACE_INV") != nullptr;
+    if (traceInv)
+        std::fprintf(stderr, "manage inventory: kind %u id %d %s op %u guid %08X tokens %zu\n", unsigned(kind), int(id),
+                     counted ? "counted" : "singular", unsigned(op), le32(&o[5]), tokens.size());
     auto at = [&](int16_t index) -> InventoryToken* { // index from 1
         return index >= 1 && size_t(index) <= tokens.size() ? &tokens[size_t(index) - 1] : nullptr;
     };
@@ -1738,9 +1983,18 @@ Exit addToFamily(Context& c) {
 Exit genericSimsCall(Context& c) {
     // The call is the u16 at 0 (GenericSimCallParam); one the game does not
     // know is its error 0x2A (Mac binary: "Function - Main" of two objects
-    // passes 0xFFFF).
+    // passes 0xFFFF). The base game's editor labels have 54 calls (0-53);
+    // Apartment Life's content goes up to 0x54 (84): its Sim semi-globals'
+    // "Function - Main - Set Skin" (0x7F01EC29:0x22A4, instruction 2) calls
+    // 60, and the AL's BHAVs use 0x36-0x54 (prim-usage on the AL: ~230
+    // instructions). The PC data has no labels for those, so they are handed
+    // to the engine like the base's engine-only calls: recording the request
+    // and returning true is what lets the AL's Sims' Main run at all (with
+    // the error, the Sims of N001_Lot11 reset thousands of times in a day —
+    // 5,914 for one of them in 29,600 ticks —, the Main livelocked and the
+    // look_at limit tripped by the restarts).
     const uint16_t call16 = le16(&c.instruction.operands[0]);
-    if (call16 > 53)
+    if (call16 > 84)
         throw gameError(err::InvalidGlobalSimCall, std::to_string(call16));
     const auto call = uint8_t(call16);
     auto& temps = c.thread.temps;
@@ -1777,6 +2031,11 @@ Exit genericSimsCall(Context& c) {
     case 47: // clear Sim hair override
     case 51: // show info on lot loading screen
     case 53: // set facial overlay state
+        return request();
+    case 54: case 55: case 56: case 57: case 58: case 59: case 60: case 61: case 62: case 63:
+    case 64: case 65: case 66: case 67: case 68: case 69: case 70: case 71: case 72: case 73:
+    case 74: case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
+    case 84: // the AL calls beyond the base's table (no labels): the engine's
         return request();
     case 39: // force recalc of wants (wants.cpp)
         return wantsGenericCall(c);
@@ -1860,16 +2119,60 @@ Exit genericSimsCall(Context& c) {
 
 // Opcodes the game has no handler for (cTSObject::OnTryElement in the Mac
 // binary, base 1.0 and Bon Voyage; docs/primitives-mac.md §2): the game's
-// error 0x05. 0x7D Follow Sim and 0x7E Run Script are Bon Voyage only.
-// Tutorial (0x0A) returns true and does nothing.
+// error 0x05. Tutorial (0x0A) returns true and does nothing.
 static Exit noHandler(Context& c) {
     throw gameError(err::NotSupported, "opcode " + hexString(c.instruction.opcode));
 }
 static Exit tutorial(Context&) { return Exit::True; }
 
+// Follow Sim (0x7D) and Run Script (0x7E): the two Bon Voyage primitives of
+// the PC executable's base class (docs/re-pc-ghidra.md sec (g)).
+//
+// Run Script (0x7E): the operands' bytes 0-1 are the STR# id (0x130, "Lua
+// Scripts") and bytes 2-3 the script id counted from 1; entry id - 1 is the
+// script's name, the text before " -- " being its file name
+// (docs/lua-scripts.md). The engine asks the same entry for the description
+// tree (the "defined in description" request) and for the `.objLua` chunk
+// (0x4D45F8E6, "defined in objLua file"); the 0x7E runs the *Lua* chunk of
+// that name, never a tree (the AL's "NPC - Get Outfit GUID for Type in
+// T[0,1]" is a tree that wraps a one-instruction 0x7E of the same name, so
+// running the tree would be a recursion), and the result is the value
+// SetScriptReturnValue left it (vm/lua_scripts.cpp).
+//
+// Follow Sim (0x7D) has 1 use in the AL and what it does with the object array
+// is still unmeasured: false.
+static Exit runScript(Context& c) {
+    const auto& o = c.instruction.operands;
+    const uint16_t table = uint16_t(le16(&o[0]));
+    const uint16_t id = uint16_t(le16(&o[2]));
+    if (id == 0)
+        return Exit::False;
+    const StringTable* names = c.vm.code().strings(kGlobalGroup, table);
+    std::string name;
+    if (names && size_t(id - 1) < names->count(lang::EnglishUS))
+        name = names->get(size_t(id - 1), lang::EnglishUS);
+    // "Name  -- the comment" (the entry's text; the name is before " -- ").
+    if (const size_t cut = name.find(" -- "); cut != std::string::npos)
+        name.resize(cut);
+    while (!name.empty() && (name.back() == ' ' || name.back() == '\t' || name.back() == '\r' || name.back() == '\n'))
+        name.pop_back();
+    while (!name.empty() && (name.front() == ' ' || name.front() == '\t'))
+        name.erase(name.begin());
+    if (name.empty()) {
+        logOnce("0x7E", "name " + std::to_string(table) + "/" + std::to_string(id),
+                "Run Script: no script name at STR# " + hexString(table) + " entry " + std::to_string(id - 1));
+        return Exit::False;
+    }
+    return runLuaScript(c, name) ? Exit::True : Exit::False;
+}
+
+static Exit runFollowSim(Context&) { return Exit::False; }
+
 void registerPrimitives(VM& vm) {
-    for (uint16_t op : {0x04, 0x05, 0x06, 0x09, 0x15, 0x18, 0x26, 0x27, 0x28, 0x29, 0x2B, 0x2C, 0x2F, 0x7D, 0x7E})
+    for (uint16_t op : {0x04, 0x05, 0x06, 0x09, 0x15, 0x18, 0x26, 0x27, 0x28, 0x29, 0x2B, 0x2C, 0x2F})
         vm.setPrimitive(op, noHandler);
+    vm.setPrimitive(0x7D, runFollowSim);
+    vm.setPrimitive(0x7E, runScript);
     for (uint16_t op = 0x34; op <= 0x68; ++op)
         vm.setPrimitive(op, noHandler);
     vm.setPrimitive(0x0A, tutorial);

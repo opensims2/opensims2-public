@@ -73,6 +73,10 @@ one() { # one <lot> <outdir>
     S2PKG_ERRORS=1 run_limited "$SOAK_HANG" "$log" "$S2PKG" autonomy "$lot" --ticks "$SOAK_TICKS" --every "$EVERY" --name-babies ${DIALOG_ARGS[@]+"${DIALOG_ARGS[@]}"}; rc=$?
     t1=$(date +%s); echo "auto_secs=$((t1-t0))" >>"$res"
     if [ $rc -eq 999 ]; then echo "hang|autonomy|killed after ${SOAK_HANG}s; last: $(tail -c 300 "$log" | tr '\n' ' ')" >>"$res"
+    elif grep -q "^empty lot package" "$log"; then
+        # The empty lot package (the 96-byte stub, N002_Lot32): the game loads
+        # it as a lot with nothing in it, so it is not a load error.
+        echo "empty|autonomy|$(grep -m1 '^empty lot package' "$log")" >>"$res"
     elif [ $rc -ne 0 ] && [ $rc -lt 128 ] && ! grep -q "^after " "$log"; then
         echo "error|autonomy|exit $rc: $(grep -m1 -E '^error' "$log")" >>"$res"
     elif [ $rc -ge 128 ]; then
@@ -115,6 +119,9 @@ one() { # one <lot> <outdir>
     elif [ $rc -ge 128 ]; then
         echo "crash|lot-save|exit $rc" >>"$res"
         backtrace "$scratch/lldb2.log" "$S2PKG" lot-save "$lot" "$scratch/out2.package" --ticks 300 --check | sed 's/^/bt|lot-save|/' >>"$res"
+    elif grep -q "^empty lot package" "$log"; then
+        # The empty lot package (the 96-byte stub): not a load error.
+        echo "empty|lot-save|$(grep -m1 '^empty lot package' "$log")" >>"$res"
     elif [ $rc -ne 0 ] && ! grep -q "differs:" "$log"; then
         echo "error|lot-save|exit $rc: $(grep -m1 '^error' "$log")" >>"$res"
     elif [ $rc -ne 0 ]; then
@@ -169,7 +176,7 @@ fi
     echo
     echo "| Category | Lots | Findings |"
     echo "|---|---|---|"
-    for c in crash hang error dead reset stuck died pinned roundtrip; do
+    for c in crash hang error dead reset stuck died pinned roundtrip empty; do
         l=$(grep -l "^$c|" "$OUT"/results/*.txt 2>/dev/null | wc -l | tr -d ' ')
         n=$(cat "$OUT"/results/*.txt 2>/dev/null | grep -c "^$c|")
         echo "| $c | $l | $n |"
@@ -184,7 +191,7 @@ fi
     echo "|---|---|---|---|"
     for f in "$OUT"/results/*.txt; do
         n=$(basename "$f" .txt)
-        grep -E '^(crash|hang|error|dead|reset|stuck|died|pinned|roundtrip)\|' "$f" | sort -u | while IFS='|' read -r c w d; do
+        grep -E '^(crash|hang|error|dead|reset|stuck|died|pinned|roundtrip|empty)\|' "$f" | sort -u | while IFS='|' read -r c w d; do
             echo "| $n | $c | $w | ${d//|/\\|} |"
         done
         grep -E '^budget_[a-z]+=[1-9]' "$f" | while IFS='=' read -r k v; do echo "| $n | budget | ${k#budget_} | $v times |"; done

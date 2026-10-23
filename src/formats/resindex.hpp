@@ -37,6 +37,13 @@ public:
     // other locales are left out (they used to win by sorting first: Czech's
     // ui.package, Dutch's Sims3D/Objects.package).
     explicit ResourceIndex(const std::filesystem::path& root, const std::string& locale = defaultLocale());
+    // An index filled by later addRoot calls.
+    ResourceIndex() = default;
+    // Adds another root after the ones already indexed: what was added first
+    // keeps winning duplicate TGIs. installationResRoots() returns an
+    // installation's roots, the base game's first, each with the same Locale
+    // treatment as the constructor's.
+    void addRoot(const std::filesystem::path& root, const std::string& locale = defaultLocale());
     // An overlay: the resources of `packages`, then (for find/findByName)
     // those of `fallback`, e.g. a Sim's character file over the game's.
     ResourceIndex(const std::vector<std::filesystem::path>& packages, const ResourceIndex* fallback);
@@ -70,5 +77,13 @@ private:
     size_t duplicates_ = 0;
     std::string locale_;
 };
+
+// The TSData/Res trees of the installation `res` belongs to: `res` itself and
+// its siblings, found walking up (the Ultimate Collection's grouped folders:
+// <root>\Double Deluxe\Base\TSData\Res, <root>\Best of Business\EP3\TSData\
+// Res, <root>\Seasons\TSData\Res, ...). `res` comes first so it wins
+// duplicates, the siblings after it sorted; a `res` without siblings (a plain
+// single-pack install) gives just {res}.
+std::vector<std::filesystem::path> installationResRoots(const std::filesystem::path& res);
 
 } // namespace os2

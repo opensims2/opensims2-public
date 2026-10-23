@@ -23,6 +23,7 @@ namespace os2 {
 
 namespace {
 constexpr int16_t kCurrentOutfit = 8; // person data "current outfit" (STR# 0xC8)
+constexpr uint16_t kModelBoneNames = 0x90; // STR# "Model - Bones" (slot_bones.cpp)
 }
 
 LotSimulation::LotSimulation(ResourceIndex& index, const Lot& lot, DbpfPackage& lotPackage,
@@ -530,7 +531,8 @@ IkObjectBone LotSimulation::ikObjectBones(const SimActor& self, int16_t object) 
 // three quarters up a box standing on the floor (a Sim's chin, a table's
 // top). A Sim's box is its rest pose's (the shapes' bounds of a skinned
 // model: inferred). Objects: objectLookPoint, else 0.75 over the floor
-// (inferred). Not done: the slots of types 1-3 (byte 14) and the camera.
+// (inferred). A slot kind (byte 14 1/2/3) aims at the target's slot point
+// (objectSlotPoint). Not done: the camera.
 std::optional<Vec3> LotSimulation::lookTarget(const vm::Object& o) const {
     // (How long the head stays on it is the look's own hold, from when it
     // gets there: HeadLook.)
@@ -539,6 +541,30 @@ std::optional<Vec3> LotSimulation::lookTarget(const vm::Object& o) const {
     const vm::Object* x = vm_->object(o.lookAt->target);
     if (!x || x->id == o.id)
         return std::nullopt;
+    // A slot of the target (byte 14 kinds 1/2/3: targeting, routing,
+    // containment = its SLOT entries of type 4, 3 and 0, view.cpp): the
+    // point the entry names, its bone or, without one, its stored offset.
+    if (o.lookAt->slotKind && objectSlotPoint) {
+        const uint16_t type = o.lookAt->slotKind == 1 ? 4 : o.lookAt->slotKind == 2 ? 3 : 0;
+        const Slots::Slot* entry = nullptr;
+        if (x->definition)
+            if (const Slots* t = code_->slots(x->group, x->definition->slotId())) {
+                size_t n = 0;
+                for (const auto& s : t->slots)
+                    if (s.type == type && n++ == o.lookAt->slotIndex) {
+                        entry = &s;
+                        break;
+                    }
+            }
+        if (entry) {
+            std::string bone;
+            if (const StringTable* names = code_->strings(x->group, kModelBoneNames))
+                if (entry->ts2Extra[0] < names->count(lang::EnglishUS))
+                    bone = names->get(entry->ts2Extra[0], lang::EnglishUS);
+            if (const auto p = objectSlotPoint(x->id, entry->offset, bone))
+                return p;
+        }
+    }
     // OS2_LOOK_AT_HEAD=1: the old inferred target (the head bone), to compare.
     static const bool atHead = std::getenv("OS2_LOOK_AT_HEAD") != nullptr;
     for (const auto& b : bound_)

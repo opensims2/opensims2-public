@@ -337,9 +337,13 @@ struct App {
 
     os2::ResourceIndex& resources() {
         if (!index) {
-            std::printf("opensims2: indexing %s\n", res.string().c_str());
+            const std::vector<std::filesystem::path> roots = os2::installationResRoots(res);
+            std::printf("opensims2: indexing %zu resource tree%s of %s\n", roots.size(), roots.size() == 1 ? "" : "s",
+                        res.string().c_str());
             std::fflush(stdout);
-            index = std::make_unique<os2::ResourceIndex>(res);
+            index = std::make_unique<os2::ResourceIndex>();
+            for (const auto& root : roots)
+                index->addRoot(root);
         }
         return *index;
     }
@@ -1410,6 +1414,17 @@ SceneExit runLot(App& app, const std::filesystem::path& lotFile, const os2::Scen
         }
         simulation.seats.slot = [&](int16_t id, double now) { return objectView.slotPlacement(id, now); };
         simulation.objectBone = [&](int16_t id, uint32_t crc) { return objectView.boneByHash(id, crc); };
+        // Look At's slot point: the slot's bone by name, else its offset
+        // (LotSimulation::lookTarget).
+        simulation.objectSlotPoint = [&](int16_t id, const std::array<float, 3>& offset,
+                                         const std::string& bone) -> std::optional<os2::Vec3> {
+            if (!bone.empty())
+                if (const auto w = objectView.nodePlacement(id, bone))
+                    return os2::Vec3{w->t[0], w->t[1], w->t[2]};
+            if (const auto at = objectView.placement(id))
+                return at->apply(os2::Vec3{offset[0], offset[1], offset[2]});
+            return std::nullopt;
+        };
         int following = 0;
         for (const auto& [id, p] : placed)
             following += objectView.addPlaced(id, p.definition, p.cres, p.instance, p.saved, p.materials, p.pose) ? 1 : 0;

@@ -22,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <random>
 #include <set>
 #include <span>
@@ -65,17 +66,29 @@ constexpr uint16_t kNamedTreeStrings = 0x12F;
 constexpr uint16_t kMeshGroupStrings = 0x87;
 constexpr uint16_t kMaterialStrings = 0x88;
 
-// Sizes of the engine-defined variable sets, from the labels of the game's own
-// SimAntics editor (objects.package, group 0x7FE59FD0: STR# 0x81 global labels,
-// 0x8D object data, 0xC8 person data, 0x86 motives). They match the highest
-// index any BHAV uses.
+// Sizes of the engine-defined variable sets. The base 1.0's were 0x58 (88),
+// 0x36 (54) and 0xAA (170), which is also what the game's own SimAntics editor
+// labels (objects.package, group 0x7FE59FD0: STR# 0x81 global labels, 0x8D
+// object data, 0xC8 person data, 0x86 motives) — and what this port pinned
+// until the packs' trees showed they read past them (the AL's `bhav-sweep` of
+// 18/10: 460 "global N out of range" — 456 + 4 in one-tick trees — 1.882 of
+// person data and 264 of object data, over 54/88/170-entry arrays). The BV-era
+// data owners check 0x71 (113), 0x3A (58) and 0xCC (204) (cTSObject::InterpValue
+// BV 0xb15f2c / cTSPerson::InterpValue BV 0xad56ec, docs/primitives-mac.md
+// §4j), and the AL goes one past each: raising the sizes until the same sweep
+// was clean gives the largest accesses of its trees — object data 113, global
+// 59, person data 230 — so the arrays hold 114, 60 and 231 (the OpenTS2
+// reimplementation sizes its object data and globals at 114 and 60 too). The
+// AL's own compiled limits are ≥ these (no AL binary read here).
+// A saved state keeps its own count per version (lotObjectDataCount /
+// lotPersonDataCount), applied to these arrays.
 // Temps: 8 per object (cTSObject +0x8A; InterpValue's owner 8 takes 0-7 and
 // gives error 0x02 past them, Mac base 1.0 and BV; no BHAV of the game uses
 // temp 8 or above).
 constexpr size_t kTempCount = 8;
-constexpr size_t kObjectDataCount = 88;
-constexpr size_t kGlobalCount = 54;
-constexpr size_t kPersonDataCount = 170;
+constexpr size_t kObjectDataCount = 114;
+constexpr size_t kGlobalCount = 60;
+constexpr size_t kPersonDataCount = 231;
 constexpr size_t kMotiveCount = 16;
 constexpr size_t kMaxStackDepth = 1000; // frames past it: "Max stack depth exceeded" (cTSTreeSim::Gosub BV 0xe1a428)
 // The nodes a thread may run in one turn before it fails as an infinite loop:
@@ -123,6 +136,9 @@ constexpr int16_t SemiAttributeCount = 79;
 // Person data fields the engine reads (names as in STR# 0xC8).
 namespace persondata {
 constexpr int16_t NeighborId = 31;
+// "NPC Type" (STR# 0xC8, the label the Lua scripts' PersonData table gives 155):
+// the pool of NPCs of the AL reads it (docs/lua-scripts.md).
+constexpr int16_t NpcType = 155;
 // "route status": 1 while the person's route is on (base 1.0 router:
 // docs/primitives-mac.md §4j); the shoo trees only shoo who has 0.
 constexpr int16_t RouteStatus = 39;
@@ -306,6 +322,18 @@ public:
     // Instance of the BHAV of `group` with this file name; the first call reads
     // the name of every BHAV.
     std::optional<uint16_t> behaviorByName(uint32_t group, const std::string& name);
+    // The ObjectScripts' Lua 5.0 chunks (docs/lua-scripts.md), by script name:
+    // the EPs' resources (0x9012468B, the `.objLua`, and 0x9012468A, the
+    // `.globalObjLua`) hold "u32 0, u32 length, the name, then the chunk". Their
+    // TGI hashes the name in a way this port's nameInstanceHash does not
+    // reproduce, so the first call scans the index once and maps the names.
+    // luaPreludes() is the `.globalObjLua` set (Global first, then by name): what
+    // the game loads before a script.
+    const std::vector<uint8_t>* luaScript(const std::string& name);
+    const std::vector<std::vector<uint8_t>>& luaPreludes();
+    // The file names of luaPreludes(), in the same order (the log's "prelude
+    // <name> failed").
+    const std::vector<std::string>& luaPreludeNames();
     // OBJD (group, instance) with this GUID; the first scan reads every OBJD.
     // A GUID none has goes to the fallback once (the neighbourhood's
     // character files: every neighbor's Sim has its definition in the game,
@@ -325,6 +353,18 @@ public:
         bool notInCas = false;
     };
     std::vector<GlobalSimObject> globalSimObjects(uint16_t mask = 1);
+    // The object definitions in the order the GUID scan finds them (the
+    // first OBJD of each GUID, as the rest of the index), with OBJD fields
+    // 75 and 76. The Apartment Life content uses those two "unused" fields
+    // as the selector category and subcategory ("Stereo - RadioStation -
+    // Pop" is 117/4, "Accessory - ..." 153/0-4, "Token - Badge - ..." 121/1-
+    // 11), and Set to Next 38 walks this list by index.
+    struct DefinitionRef {
+        uint32_t guid = 0;
+        int16_t category = 0;
+        int16_t subcategory = 0;
+    };
+    const std::vector<DefinitionRef>& definitions();
     // OBJf with the same (group, instance) as an OBJD: the object's function table.
     const ObjectFunctions* functions(uint32_t group, uint16_t instance);
     // OBJD instance of the master of a multi-tile object of `group` (the OBJD
@@ -391,9 +431,15 @@ private:
     void scanDefinitions();
     std::unordered_map<uint32_t, std::unordered_map<std::string, uint16_t>> byName_;
     bool namesScanned_ = false;
+    void scanLuaScripts();
+    bool luaScanned_ = false;
+    std::unordered_map<std::string, std::vector<uint8_t>> luaScripts_;
+    std::vector<std::vector<uint8_t>> luaPreludeChunks_;
+    std::vector<std::string> luaPreludeNames_;
     std::unordered_map<uint32_t, uint32_t> semiGlobals_;
     std::unordered_map<uint32_t, size_t> labelCounts_;
     std::unordered_map<uint32_t, std::pair<uint32_t, uint16_t>> byGuid_;
+    std::vector<DefinitionRef> definitionList_; // first GUID scan order
     bool guidsScanned_ = false;
 };
 
@@ -882,6 +928,11 @@ struct Object {
         int32_t durationMs = -1;
         bool spine = false, noEarlyExit = false;
         uint32_t serial = 0;
+        // The look point (byte 14, index byte 8): 0 the target's box at
+        // three quarters of its height; 1 targeting, 2 routing, 3
+        // containment = the target's SLOT entries of type 4, 3 and 0 (the
+        // content's "CT - Teach - Look Object" trees; view.cpp).
+        uint8_t slotKind = 0, slotIndex = 0;
     };
     std::optional<LookAt> lookAt;
     uint32_t lookAtSerial = 0; // Look Ats so far (LookAt::serial)
@@ -1029,6 +1080,10 @@ enum class Exit : uint8_t { True, False, Error, Yield, Call };
 
 class VM;
 
+// The 0x7E's Lua 5.0 state (vm/lua_scripts.cpp): one per VM, built at the
+// first script.
+class LuaRuntime;
+
 // What a primitive sees while it runs.
 struct Context {
     VM& vm;
@@ -1050,9 +1105,14 @@ using Primitive = std::function<Exit(Context&)>;
 class VM {
 public:
     explicit VM(CodeLibrary& code);
+    // Defined in vm/lua_scripts.cpp, where LuaRuntime is complete.
+    ~VM();
     VM(const VM&) = delete; // byId_ points into objects_
 
     CodeLibrary& code() { return code_; }
+
+    // The 0x7E's Lua 5.0 state: made at the first script, kept for the VM.
+    LuaRuntime& lua();
 
     // Objects get the lowest free id from 1 up, or `id` (a lot's saved
     // objects keep theirs; throws if it is taken). Attributes start with
@@ -1148,8 +1208,14 @@ public:
     // ladder), into World::objectPortals (routing_plan.cpp). Called when the lot
     // loads and when build or buy mode changes it.
     void refreshObjectPortals();
-    // Objects placed on a tile (in the world and not in a slot), by ID.
+    // Objects placed on a tile (in the world and not in a slot), by ID. The
+    // tile index (tiles_) is built on the first query and kept by setPosition
+    // and removeObject; a direct write to Object::position leaves it out of
+    // date, so every move goes through setPosition.
     std::vector<ObjectId> objectsOnTile(TilePos t) const;
+    // Sets an object's position and keeps the tile index up to date (the
+    // routing's moveTo, the placement, the teleports and the containers).
+    void setPosition(Object& o, Position p);
     // objectsOnTile of each of the (2r + 1)^2 tiles round `at`, in one walk
     // over the objects: [(dx + r) * (2r + 1) + dy + r].
     std::vector<std::vector<ObjectId>> objectsAround(TilePos at, int r) const;
@@ -1214,6 +1280,7 @@ public:
             it->second.person->objectRecords.clear();
         }
         if (auto it = objects_.find(id); it != objects_.end()) {
+            unindexObject(it->second);
             objectList_.erase(it->second.listOrder);
             if (const uint32_t g = it->second.guid(); g)
                 if (auto b = byGuid_.find(g); b != byGuid_.end())
@@ -1232,6 +1299,17 @@ public:
     // Remove Object Instance queues objects to die at the end of the tick (kill.hpp).
     std::vector<ObjectId> killQueue;
     std::set<ObjectId> dyingObjects;
+    // The objects whose room (object data 29) was written since the last
+    // notifyRoomChanges (rooms.cpp): that pass used to scan every object every
+    // tick (0.36 s of a 43,200-tick run). The port's room writers and
+    // Context::set call noteRoomChanged; createObject and the lot's
+    // restoreState mark the new and loaded ones (the scan notified those too,
+    // their notified room still being the constructor's). OS2_CHECK_ROOM_DIRTY=1
+    // compares the set with the full scan.
+    void noteRoomChanged(ObjectId id) { roomDirty_.insert(id); }
+    const std::set<ObjectId>& roomDirty() const { return roomDirty_; }
+    void clearRoomDirty() { roomDirty_.clear(); }
+    std::set<ObjectId> roomDirty_;
     // Objects in the middle of their Cleanup (cTSObject flag 0x40000,
     // cTSPerson 0x800): a cascade of resets does not come back to them.
     std::set<ObjectId> cleaningUp;
@@ -1369,6 +1447,15 @@ public:
     // what the save carries, not what the game's load trees do after.
     bool runLoadEntries = true;
     std::map<ObjectId, Thread> threads; // the Main threads
+    // The threads of the objects removed while the tick runs (deleteGroup):
+    // they are dropped at the end of it, so that the tick can walk the map
+    // without looking every thread up again. The ID and the thread's serial:
+    // the ID goes to a new object in the meantime, and that one's thread is
+    // not the one to drop.
+    std::vector<std::pair<ObjectId, uint64_t>> deadThreads;
+    // The tick is running (a nested one must not drop the dead threads: the
+    // iterators of the outer tick would dangle).
+    bool ticking = false;
     // Instructions a thread may run in one turn before it fails as an
     // infinite loop: the game's "Too many iterations" (0x44D) after 100000
     // nodes a tick (cTSTreeSim::DoNodeAction BV 0xe1b18c; 300000 when the
@@ -1690,6 +1777,25 @@ private:
     // the only places that add or remove entries of objects_.
     std::vector<Object*> byId_;
     uint64_t tableGeneration_ = 0;
+    // Tile -> the objects whose position is on it (every object in the world,
+    // in a slot or not; the queries filter by container). Built by the first
+    // objectsOnTile/objectsAround and kept by setPosition and removeObject:
+    // the two scans over all the objects were 35.799 + 3.414 queries x ~1.300
+    // objects in 3.600 ticks of N001_Lot11 (with the AL data). A direct write
+    // to Object::position leaves it out of date (OS2_CHECK_TILE_INDEX=1
+    // compares every query with the full scan).
+    struct TileHash {
+        size_t operator()(TilePos t) const {
+            return (size_t(uint32_t(t.x)) * 73856093u) ^ (size_t(uint32_t(t.y)) * 19349663u) ^
+                   (size_t(uint32_t(t.level)) * 83492791u);
+        }
+    };
+    mutable std::unordered_map<TilePos, std::vector<ObjectId>, TileHash> tiles_;
+    mutable bool tilesBuilt_ = false;
+    void ensureTileIndex() const;
+    void indexObject(const Object& o) const;
+    void unindexTile(TilePos t, ObjectId id) const;
+    void unindexObject(const Object& o) const;
     // IDs in ID order, with a flag per ID: containedObjects(), the objects
     // with timers, destinationObjects().
     struct IdList {
@@ -1724,6 +1830,7 @@ private:
     mutable uint64_t peopleTick_ = ~uint64_t(0), peopleGeneration_ = ~uint64_t(0);
     std::unordered_map<uint32_t, std::vector<ObjectId>> byGuid_;
     std::unordered_map<uint16_t, Primitive> primitives_;
+    LuaRuntime* lua_ = nullptr; // owned; deleted by ~VM (vm/lua_scripts.cpp)
 
     int initDepth_ = 0;
     void push(Thread& t, ObjectId codeOwner, uint16_t treeId, std::span<const int16_t> args);

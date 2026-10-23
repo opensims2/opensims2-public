@@ -495,10 +495,10 @@ static void testRoof() {
     r = ed.drawRoof(1, 0, 2, 4, 5, Lot::Hip);
     check(!r.ok && r.error == 0x7E && lot.roofs.empty(), "a roof corner on the lot's edge (0x7E)");
     Object& chair = vm.createObject(0x7F000001);
-    chair.position = {2.5f, 2.5f, 2};
+    vm.setPosition(chair, {2.5f, 2.5f, 2});
     r = ed.drawRoof(1, 2, 2, 8, 5, Lot::LongGable);
     check(!r.ok && r.error == 0x7F && lot.roofs.empty(), "a roof low over an object of its level (0x7F)");
-    chair.position = {5.5f, 3.5f, 2};
+    vm.setPosition(chair, {5.5f, 3.5f, 2});
     r = ed.drawRoof(1, 2, 2, 8, 5, Lot::Hip);
     check(!r.ok && r.error == 0x7F, "the hip's ridge is still under a level's height");
     vm.removeObject(chair.id);
@@ -509,13 +509,13 @@ static void testRoof() {
     // tile under a roof already there (docs/buy-build-mac.md §7.22).
     r = ed.removeRoofs();
     Object& eaveChair = vm.createObject(0x7F000001);
-    eaveChair.position = {2.5f, 1.5f, 2};
+    vm.setPosition(eaveChair, {2.5f, 1.5f, 2});
     r = ed.drawRoof(1, 2, 2, 8, 5, Lot::LongGable);
     check(!r.ok && r.error == 0x7F, "an object under the new roof's eave, outside the walls (0x7F)");
     vm.removeObject(eaveChair.id);
     r = ed.drawRoof(1, 2, 2, 8, 5, Lot::LongGable);
     Object& eaveChair2 = vm.createObject(0x7F000001);
-    eaveChair2.position = {2.5f, 1.5f, 2};
+    vm.setPosition(eaveChair2, {2.5f, 1.5f, 2});
     r = ed.drawRoof(1, 2, 2, 8, 5, Lot::Hip);
     check(r.ok && lot.roofs.size() == 2, "the eave of a roof already there clears that tile for another roof");
     vm.removeObject(eaveChair2.id);
@@ -1058,7 +1058,7 @@ static void testVertexObjects() {
     BuildEditor ed(vm, lot);
     using namespace vertextest;
     Object& chair = vm.createObject(0x7F000001);
-    chair.position = {3.5f, 3.5f, 1};
+    vm.setPosition(chair, {3.5f, 3.5f, 1});
     check(ed.vertexMoveError(0, 3, 3, 0.5f, kWalls) == 0x61, "an object pins the ground round it (0x61)");
     check(ed.vertexMoveError(0, 5, 5, 0.5f, kWalls) == 0, "two points off it does not");
     check(ed.vertexMoveError(0, 3, 3, 0.0f, kWalls) == 0, "a point already at the height is not tested");
@@ -1110,10 +1110,10 @@ static void testDeckLevelling() {
         // A chair on the ground by the rectangle's edge: the edge's points
         // of the level above would come down onto it (0x60): 0x81.
         Object& chair = vm.createObject(0x7F000001);
-        chair.position = {5.5f, 2.5f, 1};
+        vm.setPosition(chair, {5.5f, 2.5f, 1});
         auto r = ed.drawFoundation(2, 2, 4, 3);
         check(!r.ok && r.error == 0x81 && lot.elevation(1, 3, 3) == 3.5625f, "an object under the edge refuses it (0x81)");
-        chair.position = {6.5f, 2.5f, 1}; // by the ring: those points stay
+        vm.setPosition(chair, {6.5f, 2.5f, 1}); // by the ring: those points stay
         r = ed.drawFoundation(2, 2, 4, 3);
         check(r.ok && r.cost == 6 * kFoundationTilePrice, "the foundation on the slope");
         const float top = 0.375f + 0.75f;
@@ -1288,7 +1288,7 @@ static void testObjectsTestN48() {
     };
     Object& a = make(1);
     Object& b = make(1);
-    a.position = {3.5f, 3.5f, 1};
+    vm.setPosition(a, {3.5f, 3.5f, 1});
     check(checkPlacement(vm, b.id, {4, 3, 1}, 0, false).ok, "a full tile beside another: the footprints only touch");
     Placement p = checkPlacement(vm, b.id, {3, 3, 1}, 0, false);
     check(!p.ok && p.error == placementerror::Objects, "two full tiles on one tile cross (0x0C)");
@@ -1303,9 +1303,9 @@ static void testObjectsTestN48() {
     // test's 0x0C.
     Object& c = make(2);
     Object& d = make(2);
-    c.position = {6.5f, 3.5f, 1};
+    vm.setPosition(c, {6.5f, 3.5f, 1});
     check(!checkPlacement(vm, d.id, {6, 3, 1}, 0, false).ok, "quarter tiles at one centre cross");
-    c.position = {6.25f, 3.5f, 1};
+    vm.setPosition(c, {6.25f, 3.5f, 1});
     check(checkPlacement(vm, d.id, {6, 3, 1}, 0, false).ok, "side by side on one tile they fit");
     vm.removeObject(a.id);
     c.data[objdata::ExclusivePlacementFlags] = 0x1, d.data[objdata::ExclusivePlacementFlags] = 0x1;
@@ -1319,14 +1319,15 @@ static void testObjectsTestN48() {
     Object& w2 = make(3);
     w1.data[objdata::WallPlacementFlags] = 0x4, w2.data[objdata::WallPlacementFlags] = 0x4; // wall behind
     w1.data[objdata::Flags] = 0x02, w2.data[objdata::Flags] = 0x02;
-    w1.position = {9.5f, 4.5f, 1}, w1.data[objdata::Direction] = 6; // facing -y: the wall behind is at y = 5
+    vm.setPosition(w1, {9.5f, 4.5f, 1});
+    w1.data[objdata::Direction] = 6; // facing -y: the wall behind is at y = 5
     p = checkPlacement(vm, w2.id, {9, 4, 1}, 6, false);
     check(!p.ok && p.error == 0x17, "two windows on one wall: 0x17");
     p = checkPlacement(vm, w2.id, {9, 4, 1}, 2, false);
     check(!p.ok && p.error == placementerror::NeedsWall, "facing the other way it needs a wall behind (7)");
     // A "Hide Floor" object (od 8 0x4000) above the ground: no floor for another.
     Object& tub = make(1);
-    tub.position = {2.5f, 7.5f, 2};
+    vm.setPosition(tub, {2.5f, 7.5f, 2});
     tub.data[objdata::Flags] = 0x4000 | 0x02;
     Object& lamp = make(2);
     p = checkPlacement(vm, lamp.id, {2, 7, 2}, 0, false);

@@ -81,10 +81,12 @@ uint32_t crc32Lower(std::string_view s) {
 uint32_t nameInstanceHash(std::string_view name) { return crc24Lower(name) | 0xFF000000; }
 uint32_t nameInstanceHiHash(std::string_view name) { return crc32Lower(name); }
 
-ResourceIndex::ResourceIndex(const std::filesystem::path& root, const std::string& locale) {
+ResourceIndex::ResourceIndex(const std::filesystem::path& root, const std::string& locale) { addRoot(root, locale); }
+
+void ResourceIndex::addRoot(const std::filesystem::path& root, const std::string& locale) {
     const auto localeDir = root / "Locale";
     const bool localized = std::filesystem::is_directory(localeDir);
-    if (localized)
+    if (localized && locale_.empty())
         locale_ = locale;
     std::vector<std::filesystem::path> paths, localePaths;
     for (auto it = std::filesystem::recursive_directory_iterator(root); it != std::filesystem::recursive_directory_iterator();
@@ -211,6 +213,50 @@ std::vector<ResourceIndex::Location> ResourceIndex::ofType(uint32_t type) const 
         for (const auto& e : pkg->entries())
             if (e.tgi.type == type)
                 out.push_back(Location{pkg.get(), &e});
+    return out;
+}
+
+namespace {
+
+// The TSData/Res trees within `depth` levels under `dir` (never descending
+// into a TSData: that is what marks a root).
+void collectResRoots(const std::filesystem::path& dir, int depth, std::vector<std::filesystem::path>& out) {
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code de;
+        if (!it->is_directory(de))
+            continue;
+        const std::filesystem::path path = it->path();
+        if (path.filename() == "TSData") {
+            if (std::filesystem::is_directory(path / "Res", de))
+                out.push_back(path / "Res");
+        } else if (depth > 1) {
+            collectResRoots(path, depth - 1, out);
+        }
+    }
+}
+
+} // namespace
+
+std::vector<std::filesystem::path> installationResRoots(const std::filesystem::path& res) {
+    const std::filesystem::path first = res.lexically_normal();
+    std::vector<std::filesystem::path> best{first};
+    std::filesystem::path dir = first;
+    // Up to four levels up; the highest ancestor that finds at least one root
+    // beside `res` wins (the Ultimate Collection's root: four up from the
+    // base game's Res, where its collections and packs sit).
+    for (int up = 0; up < 4 && dir.has_parent_path() && dir.parent_path() != dir; ++up) {
+        dir = dir.parent_path();
+        std::vector<std::filesystem::path> found;
+        collectResRoots(dir, 4, found);
+        if (found.size() >= 2 && found.size() >= best.size())
+            best = std::move(found);
+    }
+    std::vector<std::filesystem::path> out{first};
+    for (auto& p : best)
+        if (p != first)
+            out.push_back(std::move(p));
+    std::sort(out.begin() + 1, out.end());
     return out;
 }
 

@@ -428,13 +428,18 @@ UiScreen LiveUi::screen(int width, int height) {
     };
 
     // --- Placement (inferred) ------------------------------------------------
-    // The puck at the bottom left; the live panel joined to it by their
+    // The puck at the client's left edge (measured at 800x600 and 1280x720,
+    // docs/buy-build-mac.md §1.6); the live panel joined to it by their
     // anchors (the panel's hidden rectangle captioned "4bdeffaa:bl" over the
     // puck's window 0x4BDEFFAA); the needs subpanel after the mood meter.
     const UiElement& puck = puck_.roots.front();
     const UiElement& live = live_.roots.front();
     const auto pa = puck.area();
-    const float puckX = 8, puckY = float(height) - float(pa[3] - pa[1]);
+    // The original's pod sits 3 px above the script's own reach to the
+    // client's foot (the pill's art at 516/396 over the 519/399 of the
+    // script's place), so the panel rises with it (measured: the panel's own
+    // background at height-289 at 800x600; docs/buy-build-mac.md §1.6).
+    const float puckX = 0, puckY = float(height) - float(pa[3] - pa[1]) - 3;
     float liveX = puckX + 5, liveY = puckY - 86;
     if (const UiElement* a = puck.child(0x4BDEFFAA))
         if (const UiElement* b = live.child(0x0000AAAA)) {
@@ -699,21 +704,25 @@ UiScreen LiveUi::screen(int width, int height) {
                                       : int32_t(g[vm::global::BudgetDiv10000]) * 10000 + g[vm::global::BudgetMod10000];
             hk.captions[f] = formatMoney(funds);
         }
-        // The family column grows up from the puck by the members' thumbnails (inferred).
+        // The family column grows up from the puck by the members' thumbnails
+        // (inferred); only while live — the original has none above the puck
+        // in buy mode (measured at 1280x720, docs/buy-build-mac.md §1.6).
         UiScript column;
         if (const UiElement* c = puck.child(0x4BDEFFAB)) {
-            column.roots.push_back(*c);
-            UiElement& col = column.roots.front();
-            const int n = int(members.size());
-            const int mid = std::max(31, n * 43);
-            const auto a = c->area();
-            const int bottom = a[1] + 44; // the middle piece's end
-            col.set("area", area(a[0], bottom - mid - 13, a[2], bottom));
-            if (UiElement* top = col.child(1))
-                top->set("area", area(0, 0, 18, 13));
-            if (UiElement* m = col.child(2))
-                m->set("area", area(0, 13, 18, 13 + mid));
             hk.hide.insert(c);
+            if (mode_ == 0) {
+                column.roots.push_back(*c);
+                UiElement& col = column.roots.front();
+                const int n = int(members.size());
+                const int mid = std::max(31, n * 43);
+                const auto a = c->area();
+                const int bottom = a[1] + 44; // the middle piece's end
+                col.set("area", area(a[0], bottom - mid - 13, a[2], bottom));
+                if (UiElement* top = col.child(1))
+                    top->set("area", area(0, 0, 18, 13));
+                if (UiElement* m = col.child(2))
+                    m->set("area", area(0, 13, 18, 13 + mid));
+            }
         }
         // The wall button shows the current mode; the fan opens over the camera controls.
         for (uint32_t id = 0x1100; id <= 0x1103; ++id)

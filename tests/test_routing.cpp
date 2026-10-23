@@ -71,7 +71,7 @@ enum : uint8_t { Assign = 5, Eq = 2 };
 // An object placed at the centre of a tile.
 static Object& place(VM& vm, int x, int y, int level = 1) {
     Object& o = vm.createObject(kGroup);
-    o.position = {float(x) + 0.5f, float(y) + 0.5f, level};
+    vm.setPosition(o, {float(x) + 0.5f, float(y) + 0.5f, level});
     return o;
 }
 
@@ -341,10 +341,10 @@ static void testWalking() {
     table.slots[2].facing = -2;
     code.add(kGroup, 0x80, table);
     Object& chair = vm.instantiate(kGroup, 0x80);
-    chair.position = {8.5f, 2.5f, 1};
+    vm.setPosition(chair, {8.5f, 2.5f, 1});
     chair.data[objdata::Direction] = 4; // faces +X: its front is (9, 2)
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {1.5f, 2.5f, 1};
+    vm.setPosition(sim, {1.5f, 2.5f, 1});
     vm.world->addWall(1, 5, 0, 5, 6); // in the way up to y = 6
     // Go To Routing Slot, literal slot 0.
     code.add(kGroup, 0x1000, tree({instr(0x2D, T, F, {0, 0, 1, 0, 0})}));
@@ -378,7 +378,7 @@ static void testWalking() {
 
     // Go To Relative Position: behind the chair (location 4), any direction;
     // walled in, it cannot get there.
-    sim.position = {1.5f, 9.5f, 1};
+    vm.setPosition(sim, {1.5f, 9.5f, 1});
     code.add(kGroup, 0x1003, tree({instr(0x1B, T, F, {0, 0, 4, 0xFF, 0, 0, 2})}));
     t = vm.start(sim.id, 0x1003, {}, chair.id);
     for (int i = 0; i < 1000 && t.status == Thread::Status::Running; ++i)
@@ -388,11 +388,11 @@ static void testWalking() {
           "Go To Relative Position behind");
     for (int x = 0; x < 12; ++x)
         vm.world->addWall(1, x, 8, x + 1, 8);
-    sim.position = {1.5f, 9.5f, 1};
+    vm.setPosition(sim, {1.5f, 9.5f, 1});
     t = vm.start(sim.id, 0x1003, {}, chair.id);
     vm.run(t);
     check(t.status == Thread::Status::Finished && !t.result, "no way there: false");
-    sim.position = {-1, -1, 1};
+    vm.setPosition(sim, {-1, -1, 1});
     t = vm.start(sim.id, 0x1003, {}, chair.id);
     vm.run(t);
     check(t.status == Thread::Status::Failed && t.error.find("out of world") != std::string::npos,
@@ -412,7 +412,7 @@ static void testSnapAndPlace() {
     table.slots[0].height = table.slots[2].height = 4; // counter height: bit 3 of the allowed heights
     code.add(kGroup, 0x80, table);
     Object& counter = vm.instantiate(kGroup, 0x80);
-    counter.position = {3.5f, 3.5f, 1};
+    vm.setPosition(counter, {3.5f, 3.5f, 1});
     counter.data[objdata::Direction] = 4;
     Object& plate = place(vm, 6, 6);
     Object& cup = place(vm, 6, 5);
@@ -531,9 +531,9 @@ static void testStairs() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {8.5f, 1.5f, 2};
+    vm.setPosition(lamp, {8.5f, 1.5f, 2});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {0.5f, 1.5f, 1};
+    vm.setPosition(sim, {0.5f, 1.5f, 1});
     // Go To Relative Position: in front of the lamp (direction 0, -X), facing it.
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0x04})})); // 0x04: another level
     Thread t = vm.start(sim.id, 0x1000, {}, lamp.id);
@@ -554,7 +554,7 @@ static void testStairs() {
               phases.count("a-stairs-up-loop-R") && phases.count("a-stairs-up-stop-R") && std::fabs(maxZ - 1.5f) < 1e-4f,
           "the climb's phases");
     // And back down.
-    lamp.position = {1.5f, 2.5f, 1};
+    vm.setPosition(lamp, {1.5f, 2.5f, 1});
     t = vm.start(sim.id, 0x1000, {}, lamp.id);
     phases.clear();
     for (int i = 0; i < 3000 && t.status == Thread::Status::Running; ++i) {
@@ -773,9 +773,9 @@ static void testRouteResult() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {8.5f, 8.5f, 1};
+    vm.setPosition(lamp, {8.5f, 8.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {1.5f, 1.5f, 1};
+    vm.setPosition(sim, {1.5f, 1.5f, 1});
     check(sim.person.has_value(), "a person");
     for (int x = 0; x < 10; ++x)
         vm.world->addWall(1, x, 5, x + 1, 5); // walled off
@@ -807,9 +807,9 @@ static void testRouteStatus() {
         code.add(kGroup, 0x1010, tree({expr(Global, 10, Assign, MyPersonData, 39, T, E)}));
         vm.globals[10] = -1;
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {8.5f, 8.5f, 1};
+        vm.setPosition(lamp, {8.5f, 8.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {1.5f, 1.5f, 1};
+        vm.setPosition(sim, {1.5f, 1.5f, 1});
         if (walled) {
             for (int x = 0; x < 10; ++x)
                 vm.world->addWall(1, x, 5, x + 1, 5);
@@ -857,9 +857,9 @@ static void testRoutePersonDataFields() {
         // The pre-route tree: global 10 = my person data 40.
         code.add(kGroup, 0x1010, tree({expr(Global, 10, Assign, MyPersonData, 40, T, E)}));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {8.5f, 8.5f, 1};
+        vm.setPosition(lamp, {8.5f, 8.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {1.5f, 1.5f, 1};
+        vm.setPosition(sim, {1.5f, 1.5f, 1});
         for (int k : {37, 38, 40, 55})
             sim.person->data[size_t(k)] = 77;
         if (walled)
@@ -903,9 +903,9 @@ static void testRouteSlotIndex() {
     code.add(kGroup, 0x80, table);
     code.add(kGlobalGroup, 0x64, table); // the global SLOT
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {6.5f, 5.5f, 1};
+    vm.setPosition(lamp, {6.5f, 5.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {1.5f, 1.5f, 1};
+    vm.setPosition(sim, {1.5f, 1.5f, 1});
     for (const auto& [scope, want] : {std::pair{uint8_t(1), int16_t(1)}, std::pair{uint8_t(2), int16_t(1001)}}) {
         code.add(kGroup, 0x1000 + scope, tree({instr(0x2D, T, F, {1, 0, scope, 0, 0})}));
         Thread t = vm.start(sim.id, uint16_t(0x1000 + scope), {}, lamp.id);
@@ -913,7 +913,7 @@ static void testRouteSlotIndex() {
         check(sim.person->data[37] == want, scope == 2 ? "route slot: a global slot's index + 1000" : "route slot: a local slot's index");
         for (int i = 0; i < 2000 && t.status == Thread::Status::Running; ++i)
             vm.run(t);
-        sim.position = {1.5f, 1.5f, 1};
+        vm.setPosition(sim, {1.5f, 1.5f, 1});
     }
 }
 
@@ -931,16 +931,16 @@ static void testBlockedBySim() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {11.5f, 1.5f, 1};
+    vm.setPosition(lamp, {11.5f, 1.5f, 1});
     Object& walker = vm.instantiate(kGroup, 0x81);
-    walker.position = {0.5f, 1.5f, 1};
+    vm.setPosition(walker, {0.5f, 1.5f, 1});
     // Two Sims across the corridor: one Sim alone in a one-tile corridor is
     // passed (the centres only have to stay 0.283 apart and the walls let a
     // centre 0.375 off the middle).
     Object& other = vm.instantiate(kGroup, 0x81);
-    other.position = {6.5f, 1.6f, 1};
+    vm.setPosition(other, {6.5f, 1.6f, 1});
     Object& wallSim = vm.instantiate(kGroup, 0x81);
-    wallSim.position = {6.5f, 1.15f, 1};
+    vm.setPosition(wallSim, {6.5f, 1.15f, 1});
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
     Thread t = vm.start(walker.id, 0x1000, {}, lamp.id);
     int ticks = 0, waited = 0;
@@ -959,7 +959,7 @@ static void testBlockedBySim() {
               ticks < 300 && walker.position.x < 6,
           "blocked by a Sim in a corridor: steps aside once, then fails with 14");
     // The Sim steps aside (out of the corridor): the way is free.
-    other.position = {-1, -1, 1};
+    vm.setPosition(other, {-1, -1, 1});
     t = vm.start(walker.id, 0x1000, {}, lamp.id);
     for (int i = 0; i < 3000 && t.status == Thread::Status::Running; ++i)
         vm.run(t);
@@ -978,11 +978,11 @@ static void testBlockedBySim() {
     vm.world = World(12, 12);
     Object& a = walker;
     Object& b = other;
-    a.position = {2.5f, 6.5f, 1};
-    b.position = {9.5f, 6.5f, 1};
+    vm.setPosition(a, {2.5f, 6.5f, 1});
+    vm.setPosition(b, {9.5f, 6.5f, 1});
     Object& lampB = vm.instantiate(kGroup, 0x80);
-    lamp.position = {11.5f, 6.5f, 1};
-    lampB.position = {0.5f, 6.5f, 1};
+    vm.setPosition(lamp, {11.5f, 6.5f, 1});
+    vm.setPosition(lampB, {0.5f, 6.5f, 1});
     code.add(kGroup, 0x1001, tree({instr(0x1B, T, F, {0, 0, 4, 0xFE, 0, 0, 0})})); // behind the lamp (its +X side)
     vm.threads.insert_or_assign(a.id, vm.start(a.id, 0x1000, {}, lamp.id));
     vm.threads.insert_or_assign(b.id, vm.start(b.id, 0x1001, {}, lampB.id));
@@ -1019,11 +1019,11 @@ static void testDoorWait() {
     doorDef.fields[(0x52 - 0x44) / 2] = kObjectTypeDoor;
     code.add(kGroup, 0x82, doorDef);
     Object& door = vm.instantiate(kGroup, 0x82);
-    door.position = {4.5f, 2.5f, 1};
+    vm.setPosition(door, {4.5f, 2.5f, 1});
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {9.5f, 2.5f, 1};
+    vm.setPosition(lamp, {9.5f, 2.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {1.5f, 4.5f, 1};
+    vm.setPosition(sim, {1.5f, 4.5f, 1});
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
     Thread t = vm.start(sim.id, 0x1000, {}, lamp.id);
     int waitTicks = 0;
@@ -1074,11 +1074,11 @@ static void testDoorPortalTree() {
                                        expr(Global, 11, Assign, StackId, 0, T, E)}, 8));
         vm.globals[12] = locked ? 1 : 0;
         Object& door = vm.instantiate(kGroup, 0x82);
-        door.position = {4.5f, 2.5f, 1};
+        vm.setPosition(door, {4.5f, 2.5f, 1});
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {9.5f, 2.5f, 1};
+        vm.setPosition(lamp, {9.5f, 2.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {1.5f, 4.5f, 1};
+        vm.setPosition(sim, {1.5f, 4.5f, 1});
         code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0x02})}));
         Thread t = vm.start(sim.id, 0x1000, {}, lamp.id);
         for (int i = 0; i < 2000 && t.status == Thread::Status::Running; ++i)
@@ -1115,9 +1115,9 @@ static void testPreRouteTree() {
                                        expr(Global, 12, Assign, StackId, 0, go(3), E), // global 12 = stack object
                                        expr(Data, 1, Assign, Lit, 0, refuse ? F : T, E)}, 6));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {8.5f, 2.5f, 1};
+        vm.setPosition(lamp, {8.5f, 2.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {1.5f, 2.5f, 1};
+        vm.setPosition(sim, {1.5f, 2.5f, 1});
         code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0x02})}));
         Thread t = vm.start(sim.id, 0x1000, {}, lamp.id);
         for (int i = 0; i < 2000 && t.status == Thread::Status::Running; ++i)
@@ -1158,9 +1158,9 @@ static void testRouteInGoalCheck() {
                                    instr(0x1B, go(3), go(3), {0, 0, 0, 0xFE, 0, 0, 0x02}),
                                    expr(Global, 11, Assign, Lit, 1, F, E)}, 4)); // global 11: back from the inner route
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {9.5f, 2.5f, 1};
+    vm.setPosition(lamp, {9.5f, 2.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {1.5f, 2.5f, 1};
+    vm.setPosition(sim, {1.5f, 2.5f, 1});
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0x02})}));
     Thread t = vm.start(sim.id, 0x1000, {}, lamp.id);
     vm.run(t);
@@ -1205,19 +1205,19 @@ static void testBlockedGoalCheck() {
                                    instr(0x00, T, E, {3, 0})}, // sleep param 3 ticks
                                   4));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {9.5f, 2.5f, 1};
+    vm.setPosition(lamp, {9.5f, 2.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {1.5f, 2.5f, 1};
+    vm.setPosition(sim, {1.5f, 2.5f, 1});
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0x02})}));
     Thread t = vm.start(sim.id, 0x1000, {}, lamp.id);
     vm.run(t);
     Object& box = vm.instantiate(kGroup, 0x80);
-    box.position = {3.5f, 2.5f, 1}; // in the way, after the plan
+    vm.setPosition(box, {3.5f, 2.5f, 1}); // in the way, after the plan
     bool moved = false;
     for (int i = 0; i < 3000 && t.status == Thread::Status::Running; ++i) {
         vm.run(t);
         if (!moved && sim.route && sim.route->check == 3) { // the blocked goal check runs
-            box.position = {-1, -1, 1};
+            vm.setPosition(box, {-1, -1, 1});
             moved = true;
         }
     }
@@ -1238,10 +1238,10 @@ static void testMoveOutOfWaySlot() {
     vm.world = World(10, 10);
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& asker = vm.instantiate(kGroup, 0x81);
-    asker.position = {3.5f, 5.5f, 1};
+    vm.setPosition(asker, {3.5f, 5.5f, 1});
     asker.data[objdata::Direction] = 4; // +X
     Object& mover = vm.instantiate(kGroup, 0x81);
-    mover.position = {4.5f, 5.7f, 1}; // ahead of it, on its +Y side (direction 2, d + 6)
+    vm.setPosition(mover, {4.5f, 5.7f, 1}); // ahead of it, on its +Y side (direction 2, d + 6)
     int direction = -1;
     const auto slot = routing_internal::moveOutOfWaySlot(mover, asker, 0, direction);
     check(slot.has_value() && (slot->flags & 0xFF) == (1u << 3), "move-out-of-way slot: direction d + 7 on the mover's side");
@@ -1266,7 +1266,7 @@ static void testMoveOutOfWaySlot() {
     check(one && (one->flags & 0xFF) == 0xC6 && direction == -1 && one->facing == -3 && (one->flags & 0x108000) == 0x108000 &&
               !(one->flags & 0x1000000),
           "move-out-of-way slot: type 1 relative to the destination's own direction");
-    mover.position = {9.5f, 9.5f, 1};
+    vm.setPosition(mover, {9.5f, 9.5f, 1});
     check(!routing_internal::moveOutOfWaySlot(mover, asker, 0, direction), "move-out-of-way slot: none past 4 tiles");
 }
 
@@ -1319,19 +1319,19 @@ static void testMoveOutOfWay() {
         code.add(kDestGroup, 0x80, destInit);
         code.add(kDestGroup, 0x1001, tree({expr(Data, 8, 9, Lit, 5, T, E)}));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {11.5f, 1.5f, 1};
+        vm.setPosition(lamp, {11.5f, 1.5f, 1});
         Object& walker = vm.instantiate(kGroup, 0x81);
-        walker.position = {0.5f, 1.5f, 1};
+        vm.setPosition(walker, {0.5f, 1.5f, 1});
         walker.person->data[33] = 50; // user driven
         Object& other = vm.instantiate(kGroup, 0x81);
-        other.position = {6.5f, 1.6f, 1};
+        vm.setPosition(other, {6.5f, 1.6f, 1});
         other.data[objdata::Direction] = 0; // facing the walker
         other.person->data[33] = lowPriority ? 0 : 50;
         vm.startMain(other.id);
         // A Sim of high priority against the far wall: with it the way past
         // the other is too narrow (0.283 between centres).
         Object& wallSim = vm.instantiate(kGroup, 0x81);
-        wallSim.position = {6.5f, 1.15f, 1};
+        vm.setPosition(wallSim, {6.5f, 1.15f, 1});
         wallSim.person->data[33] = 100;
         code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0xFF, 0xFE, 0, 0, 0x02})})); // anywhere near: goals
         vm.threads.insert_or_assign(walker.id, vm.start(walker.id, 0x1000, {}, lamp.id));
@@ -1375,9 +1375,9 @@ static void testTurnInPlace() {
         code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
         code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {10.5f, 5.5f, 1};
+        vm.setPosition(lamp, {10.5f, 5.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {2.5f, 5.5f, 1};
+        vm.setPosition(sim, {2.5f, 5.5f, 1});
         sim.person->data[58] = 27; // an adult
         sim.data[objdata::Direction] = int16_t(facing);
         code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
@@ -1504,9 +1504,9 @@ static void testLocoStartWindow() {
         code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
         code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {11.5f, 5.5f, 1};
+        vm.setPosition(lamp, {11.5f, 5.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {2.5f, 5.5f, 1};
+        vm.setPosition(sim, {2.5f, 5.5f, 1});
         sim.person->data[58] = 27;
         sim.data[objdata::Direction] = 4;
         vm.ticks = 300;
@@ -1549,9 +1549,9 @@ static void testLocoPhases() {
         code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
         code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {11.5f, 5.5f, 1};
+        vm.setPosition(lamp, {11.5f, 5.5f, 1});
         Object& sim = vm.instantiate(kGroup, 0x81);
-        sim.position = {2.5f, 5.5f, 1};
+        vm.setPosition(sim, {2.5f, 5.5f, 1});
         sim.person->data[58] = 27;
         sim.data[objdata::Direction] = int16_t(facing);
         code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
@@ -1628,9 +1628,9 @@ static void testLocoBlend() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {11.5f, 8.5f, 1};
+    vm.setPosition(lamp, {11.5f, 8.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {2.5f, 5.5f, 1};
+    vm.setPosition(sim, {2.5f, 5.5f, 1});
     sim.person->data[58] = 27;
     sim.data[objdata::Direction] = 4;
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
@@ -1744,9 +1744,9 @@ static void testLocoStride() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {6.5f, 5.5f, 1};
+    vm.setPosition(lamp, {6.5f, 5.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {2.5f, 5.5f, 1};
+    vm.setPosition(sim, {2.5f, 5.5f, 1});
     sim.person->data[58] = 27;
     sim.data[objdata::Direction] = 4;
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
@@ -1797,9 +1797,9 @@ static void testSidestep() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {3.5f, 3.5f, 1};
+    vm.setPosition(lamp, {3.5f, 3.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {2.5f, 4.0f, 1};
+    vm.setPosition(sim, {2.5f, 4.0f, 1});
     sim.person->data[58] = 27;
     sim.data[objdata::Direction] = 4; // facing +X, the lamp's west side's facing
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
@@ -1851,17 +1851,17 @@ static void testLocoHalt() {
         code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
         code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
         Object& lamp = vm.instantiate(kGroup, 0x80);
-        lamp.position = {15.5f, 1.5f, 1};
+        vm.setPosition(lamp, {15.5f, 1.5f, 1});
         Object& walker = vm.instantiate(kGroup, 0x81);
-        walker.position = {1.5f, 1.5f, 1};
+        vm.setPosition(walker, {1.5f, 1.5f, 1});
         walker.person->data[58] = 27;
         walker.data[objdata::Direction] = 4;
         if (!object) { // two Sims across the corridor (one alone is passed)
             Object& other = vm.instantiate(kGroup, 0x81);
-            other.position = {8.5f, 1.6f, 1};
+            vm.setPosition(other, {8.5f, 1.6f, 1});
             other.person->data[58] = 27;
             Object& wallSim = vm.instantiate(kGroup, 0x81);
-            wallSim.position = {8.5f, 1.15f, 1};
+            vm.setPosition(wallSim, {8.5f, 1.15f, 1});
             wallSim.person->data[58] = 27;
         }
         code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
@@ -1872,7 +1872,7 @@ static void testLocoHalt() {
         for (int i = 0; i < 600 && t.status == Thread::Status::Running; ++i) {
             if (object && i == 40) { // a box dropped two tiles ahead
                 Object& box = vm.instantiate(kGroup, 0x80);
-                box.position = {std::floor(walker.position.x) + 2.5f, 1.5f, 1};
+                vm.setPosition(box, {std::floor(walker.position.x) + 2.5f, 1.5f, 1});
             }
             vm.run(t);
             if (!walker.route)
@@ -1927,15 +1927,15 @@ static void testRunnerStep() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {15.5f, 1.5f, 1};
+    vm.setPosition(lamp, {15.5f, 1.5f, 1});
     Object& runner = vm.instantiate(kGroup, 0x81);
-    runner.position = {1.5f, 1.5f, 1};
+    vm.setPosition(runner, {1.5f, 1.5f, 1});
     runner.person->data[58] = 27;
     Object& other = vm.instantiate(kGroup, 0x81); // two across the corridor (one alone is passed)
-    other.position = {6.5f, 1.6f, 1};
+    vm.setPosition(other, {6.5f, 1.6f, 1});
     other.person->data[58] = 27;
     Object& wallSim = vm.instantiate(kGroup, 0x81);
-    wallSim.position = {6.5f, 1.15f, 1};
+    vm.setPosition(wallSim, {6.5f, 1.15f, 1});
     wallSim.person->data[58] = 27;
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
     Thread t = vm.start(runner.id, 0x1000, {}, lamp.id);
@@ -1971,7 +1971,7 @@ static void testPredictionOnCurve() {
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& a = vm.instantiate(kGroup, 0x81);
     Object& b = vm.instantiate(kGroup, 0x81);
-    a.position = {1.8f, 1.5f, 1};
+    vm.setPosition(a, {1.8f, 1.5f, 1});
     Object::Route r;
     std::vector<std::array<float, 2>> through;
     auto add = [&](float x, float y) {
@@ -1998,7 +1998,7 @@ static void testPredictionOnCurve() {
     for (; t < 0.40f; t += 0.005f)
         if (curveDistance(2.0f - t, 1.5f + t) < 0.27f)
             break;
-    b.position = {2.0f - t, 1.5f + t, 1};
+    vm.setPosition(b, {2.0f - t, 1.5f + t, 1});
     check(t < 0.40f && t >= 0.29f, "prediction on the curve: a place off the legs by 0.29 or more and under 0.283 from the curve");
     check(routing_internal::simAhead(vm, a, *a.route).id == b.id,
           "the predicted blocking follows the frame's curve: the Sim inside the corner is seen");
@@ -2019,13 +2019,13 @@ static void testMutualBlock() {
     code.add(kGroup, 0x80, definition(0xAAAA0001, 0));
     code.add(kGroup, 0x81, definition(0xAAAA0002, 0, true));
     Object& east = vm.instantiate(kGroup, 0x80);
-    east.position = {13.5f, 1.5f, 1};
+    vm.setPosition(east, {13.5f, 1.5f, 1});
     Object& west = vm.instantiate(kGroup, 0x80);
-    west.position = {0.5f, 1.5f, 1};
+    vm.setPosition(west, {0.5f, 1.5f, 1});
     Object& a = vm.instantiate(kGroup, 0x81);
-    a.position = {2.5f, 1.5f, 1};
+    vm.setPosition(a, {2.5f, 1.5f, 1});
     Object& b = vm.instantiate(kGroup, 0x81);
-    b.position = {11.5f, 1.5f, 1};
+    vm.setPosition(b, {11.5f, 1.5f, 1});
     code.add(kGroup, 0x1000, tree({instr(0x1B, T, F, {0, 0, 0, 0xFE, 0, 0, 0})}));
     code.add(kGroup, 0x1001, tree({instr(0x1B, T, F, {0, 0, 4, 0xFE, 0, 0, 0})}));
     // The pause (DoPause): "CT - Route Blocked Animation", here a 30-tick wait.
@@ -2083,9 +2083,9 @@ static void testGoHere() {
     code.add(kDestGroup, 0x80, destInit);
     code.add(kDestGroup, 0x1001, tree({expr(Data, 8, 9, Lit, 5, T, E)}));
     Object& lamp = vm.instantiate(kGroup, 0x80);
-    lamp.position = {8.5f, 4.5f, 1};
+    vm.setPosition(lamp, {8.5f, 4.5f, 1});
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {6.5f, 1.5f, 1};
+    vm.setPosition(sim, {6.5f, 1.5f, 1});
     sim.person->data[33] = 0;
     vm.startMain(sim.id);
     const size_t before = vm.objects().size();
@@ -2126,7 +2126,7 @@ static void testGoHere() {
         rugDef.fields[(0x52 - 0x44) / 2] = 0x13;
         code.add(kGroup, 0x82, rugDef);
         Object& rug = vm.instantiate(kGroup, 0x82);
-        rug.position = {10.5f, 2.5f, 1};
+        vm.setPosition(rug, {10.5f, 2.5f, 1});
         const ObjectId rugId = rug.id;
         const Position floor{10.2f, 2.7f, 1};
         check(isGoHereRug(vm, rugId) && !isGoHereRug(vm, lamp.id), "rug: type 0x13");
@@ -2183,7 +2183,7 @@ static void testGoHere() {
         ObjectDefinition walkDef = definition(kGoHereGuid, 0);
         pc.add(kDestGroup, 0x81, walkDef);
         Object& swimmer = pv.instantiate(kGroup, 0x81);
-        swimmer.position = {6.5f, 6.5f, 1};
+        vm.setPosition(swimmer, {6.5f, 6.5f, 1});
         const ObjectId sd = createGoHereDestination(pv, swimmer.id, 3.5f, 3.5f, 1);
         check(sd && pv.object(sd)->guid() == kSwimHereGuid && pv.object(sd)->position.level == 0,
               "go here: a swim destination on the pool's floor");
@@ -2204,7 +2204,9 @@ static void testPlaceNearFree() {
     VM vm(code);
     vm.world = World(8, 8);
     Object& me = place(vm, 3, 3);
-    me.position.x = 3.2f, me.position.y = 3.7f;
+    Position at = me.position;
+    at.x = 3.2f, at.y = 3.7f;
+    vm.setPosition(me, at);
     me.data[objdata::Flags] = 0x10; // lets others through, so it is no obstacle itself
     check(vm.placeNearFree(me) && me.position.x == 3.5f && me.position.y == 3.5f, "free spot: the own tile's centre");
     place(vm, 3, 3); // something on that tile
@@ -2325,7 +2327,7 @@ static void testSnappedFootprints() {
     Object& table = place(vm, 3, 3); // the OBJD box: [3.01, 3.99] once snapped
     check(near(vm.routingFootprint(table)[0], {3.01f, 3.01f, 3.99f, 3.99f}), "snapped footprint: an object's");
     Object& sim = vm.instantiate(kGroup, 0x81);
-    sim.position = {4.105f, 3.5f, 1}; // 0.015 off the table's side
+    vm.setPosition(sim, {4.105f, 3.5f, 1}); // 0.015 off the table's side
     Object::Route r;
     check(routing_internal::stepBlocker(vm, sim, r, 4.07f, 3.5f, 1) == 0,
           "snapped footprint: a step 0.03 into the table's last cell goes");

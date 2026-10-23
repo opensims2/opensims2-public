@@ -5,6 +5,7 @@
 
 #include "tutorial_cmds.hpp"
 #include "budget.hpp"
+#include "data_index.hpp"
 
 #include "formats/dbpf.hpp"
 #include "formats/lot.hpp"
@@ -65,7 +66,8 @@ void printStack(vm::VM& m, uint32_t guid) {
 }
 
 int cmdTutorial(const std::filesystem::path& lotFile, int ticks, bool autoPlay, int wait, bool verbose) {
-    ResourceIndex index(resRootOf(lotFile));
+    ResourceIndex index;
+    s2pkgAddInstallation(index, resRootOf(lotFile));
     vm::CodeLibrary code(&index);
     DbpfPackage pkg(lotFile);
     const Lot lot = Lot::load(pkg);

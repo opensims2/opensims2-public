@@ -112,10 +112,15 @@ namespace {
 // until the next request); with 0x04 the spine twists too, with 0x02 a
 // target past the head's limits is held at them instead of given up
 // (app/look_at.cpp, docs/anim-mac.md §12.3). The look runs on its own: the
-// primitive is true at once. Not done: the slots (byte 14: 0 three
-// quarters of the target's height, 1 targeting, 2 routing, 3 containment
-// slot byte 8, past the slots error 0x1B), the event tree (u16 9: the
-// look's states as events 9901-9906).
+// primitive is true at once. The look point: byte 14 (byte 8 its index) is
+// 0 the target's box at three quarters of its height; 1 targeting, 2
+// routing and 3 containment slot are the target's SLOT entries of type 4,
+// 3 and 0 — the mapping the content measures: the "CT - Teach - Look
+// Object" trees use 1 and 3, each index inside that type's count (a
+// dummy's incision bone, a garden's plants, a Sim's spine) — and past the
+// count they are error 0x1B. The request keeps the slot for the app to aim
+// at (Object::LookAt). Not done: the event tree (u16 9: the look's states
+// as events 9901-9906).
 Exit lookAt(Context& c) {
     const auto& o = c.instruction.operands;
     Object& me = c.me();
@@ -153,6 +158,25 @@ Exit lookAt(Context& c) {
     if (flags & 0x80)
         return Exit::True;
     const Object* x = c.vm.object(*target);
+    // The look point's slot (byte 14, index byte 8): the target's SLOT
+    // entries of the kind's type — 1 targeting, 2 routing, 3 containment
+    // (4, 3 and 0; the content's Look Ats use 1 and 3). Past the type's
+    // count, error 0x1B. Read before the room and head tests (the head
+    // test needs the point; the room test's place in the binary was not
+    // read).
+    uint8_t slotKind = 0, slotIndex = 0;
+    if (o[14] >= 1 && o[14] <= 3) {
+        const uint16_t type = o[14] == 1 ? 4 : o[14] == 2 ? 3 : 0;
+        size_t count = 0;
+        if (x->definition)
+            if (const Slots* t = c.vm.code().slots(x->group, x->definition->slotId()))
+                for (const auto& s : t->slots)
+                    count += s.type == type;
+        if (o[8] >= count)
+            throw gameError(err::SlotOutOfRange,
+                            "slot " + std::to_string(o[8]) + " of object " + std::to_string(x->id));
+        slotKind = o[14], slotIndex = o[8];
+    }
     if (!x->position.inWorld() && !x->data[objdata::ContainerId]) {
         me.lookAt.reset();
         return Exit::False; // ours: nowhere to look
@@ -165,6 +189,8 @@ Exit lookAt(Context& c) {
     look.spine = flags & 0x04;
     look.noEarlyExit = flags & 0x02;
     look.serial = ++me.lookAtSerial;
+    look.slotKind = slotKind;
+    look.slotIndex = slotIndex;
     me.lookAt = look;
     return Exit::True;
 }

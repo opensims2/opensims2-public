@@ -122,7 +122,12 @@ struct BhavLabels {
 // layout (versions 0x43-0x47, 8 extra bytes per slot).
 struct Slots {
     struct Slot {
-        uint16_t type = 0; // 0: container, 1: location, 2: routing, 3: target
+        // 0 containment, 3 routing, 4 target (the Look At's byte 14 kinds;
+        // view.cpp). 1 is the Sims 1 layout's "location"; measured, of the
+        // 4.121 distinct SLOTs of the Ultimate Collection only four objects
+        // carry a 1 (the carried Baby Bottle, Smart Milk, Paper Airplane and
+        // Newspaper, Sims 2-format files too) and none carries a 2.
+        uint16_t type = 0;
         std::array<float, 3> offset{};
         int32_t standing = 0, sitting = 0, ground = 0;
         uint32_t flags = 0;

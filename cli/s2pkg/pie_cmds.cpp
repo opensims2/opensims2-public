@@ -4,6 +4,7 @@
 
 #include "pie_cmds.hpp"
 #include "budget.hpp"
+#include "data_index.hpp"
 
 #include "formats/bhav.hpp"
 #include "formats/binreader.hpp"
@@ -67,7 +68,8 @@ int cmdPie(const std::filesystem::path& lotFile, const std::string& simQuery, co
            int select, int ticks, bool all, std::optional<int> motives, bool fromInit, size_t trace,
            int dialogAnswer, size_t traceChecks, bool anims, const std::vector<std::string>& creates,
            const std::string& birth, const std::string& userDir, const std::string& saveHood) {
-    ResourceIndex index(resRoot(lotFile));
+    ResourceIndex index;
+    s2pkgAddInstallation(index, resRoot(lotFile));
     vm::CodeLibrary code(&index);
     // Text/*.package's tables for the dialogs' $AspirationString and the babies' names.
     UiResources texts(index, resRoot(lotFile));

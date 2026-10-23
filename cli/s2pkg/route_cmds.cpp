@@ -4,6 +4,7 @@
 
 #include "route_cmds.hpp"
 #include "budget.hpp"
+#include "data_index.hpp"
 
 #include "formats/bhav.hpp"
 #include "formats/dbpf.hpp"
@@ -33,7 +34,10 @@ std::filesystem::path resRoot(const std::filesystem::path& pkg) {
     for (auto p = std::filesystem::absolute(pkg).parent_path(); p.has_relative_path(); p = p.parent_path())
         if (p.filename() == "Res")
             return p;
-    throw std::runtime_error("the lot is not under a TSData/Res directory");
+    // A lot in the player's folder: the game's data from $OS2_DATA (as autonomy and pie).
+    if (const char* data = std::getenv("OS2_DATA"); data && std::filesystem::is_directory(std::filesystem::path(data) / "TSData/Res"))
+        return std::filesystem::path(data) / "TSData/Res";
+    throw std::runtime_error("the lot is not under a TSData/Res directory (set OS2_DATA to data/game)");
 }
 
 std::string nameOf(const vm::Object& o) { return o.definition ? o.definition->fileName : "?"; }
@@ -77,7 +81,8 @@ void printMap(vm::VM& vm, int level, float cx, float cy, int radius, const vm::O
 int cmdRoute(const std::filesystem::path& lotFile, const std::string& simQuery, const std::string& objectQuery,
              int slot, std::optional<int> relative, int ticks, bool map, bool fromInit, int pie,
              std::vector<vm::ObjectId> then) {
-    ResourceIndex index(resRoot(lotFile));
+    ResourceIndex index;
+    s2pkgAddInstallation(index, resRoot(lotFile));
     vm::CodeLibrary code(&index);
     DbpfPackage pkg(lotFile);
     const Lot lot = Lot::load(pkg);

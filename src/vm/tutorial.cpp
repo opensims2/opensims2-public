@@ -175,7 +175,7 @@ int ensureTutorialControllers(VM& vm) {
             Object* o = vm.instantiateGuid(guid);
             if (!o)
                 continue;
-            o->position = Position{};
+            vm.setPosition(*o, Position{});
             vm.setContainer(*o, 0, -1);
             vm.initialize(o->id, before);
             ++created;

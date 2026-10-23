@@ -129,7 +129,25 @@ O layout está no script (`s2pkg ui-dump … 49060004`). O código
 
   Em negrito estão as exceções ao padrão 20→1, 30→2, 40→4, 50→8, 80→0x10. No B7, o
   `…60` é crianças (0x10) e o "Diversos" é `B770` (0x80); o "Tudo" é `B780`.
-  O histograma do campo 94 nos dados confere com esses bits.
+  O histograma do campo 94 nos dados confere com esses bits, e as contagens
+  por bit particionam exatamente os 75 do Conforto (17+12+20+8+11+7). Os 17
+  do `B120` (cadeiras de jantar) eram só o base: o app agora indexa a
+  instalação inteira (`ResourceIndex::addRoot` + `installationResRoots`, no
+  CLI `s2pkg catalog --installation`; o `TSData/Res` do base primeiro, os
+  outros packs por caminho), e com as expansões o `B120` tem **47** (os 1666
+  compráveis da instalação, Conforto 201 = 47+31+45+42+13+23). Conferido: a
+  lista do `B120` não muda invertendo a prioridade dos packs, e nenhum
+  candidato de `campo 94 & 1` é escondido pelos filtros (recompensa/Sim;
+  nenhum item só-comunitário). **Resolvido 21/10**: os 6 que faltam para os 53
+  da captura do jogo em 1280x720 (barra: 304 px de 619, 26 por página) não vêm
+  dos mods desta máquina — o `README_MODS.txt` do backup `_MOD_BACKUP_20261016`
+  lista os que estavam instalados (TS2 Extender, Lighting Mod UC,
+  `userStartup.cheat`, Starship UI) e nenhum acrescenta objetos de catálogo: o
+  `ObjectScripts.package` do Extender tem 0 OBJD, os `Overrides` do mod de luz
+  só repetem GUIDs já contados (128AC80D, B28AC9D7, 128AD07E, 128AC991) e o
+  tema de UI não tem objetos. Eram conteúdo do `Downloads` do usuário, que esta
+  máquina não tem mais (o backup guardou só os arquivos substituídos). O port
+  conta a instalação: 47 cadeiras, 1666 compráveis.
 - **Sala** `0xC100…0xC900`: C100 sala de estar = 8, C200 jantar = 0x20,
   C300 exterior = 0x10, C400 diversos = 0x40 (oculto), C500 estudo = 0x80,
   C600 quarto = 2, C700 cozinha = 1, C800 crianças = 0x100, C900 banheiro
@@ -167,6 +185,51 @@ O layout está no script (`s2pkg ui-dump … 49060004`). O código
 
 **Para nós**: renderizar a miniatura com o nosso renderer (uma câmera fixa
 de 3/4 e uma luz) e guardar em cache. Não é preciso ler o pacote do usuário.
+
+### 1.6 A colocação do painel na tela (medido no jogo, 800x600 e 1280x720)
+
+Coordenadas de cliente, medidas nas capturas do jogo em janela (o mesmo
+binário; o jogo estava preso no preset `$Low` do `Graphics Rules.sgr`,
+máx 800x600 — destravado para o 1280x720). Com o catálogo cheio de itens:
+
+- À esquerda nada anda com a tela: o puck em x 0 (a arte da pílula em 516 e
+  396, 3 px acima dos 519/399 que o script alcança — igual em Buy, Build e
+  Live) e a janela do catálogo (`0x1000`/`0x2000`) com o cap esquerdo em
+  x 537 nas duas resoluções — 5 px à direita do slot do script; o endcap da
+  barra (`0x4CC48AA4`, 23 px) fica em 532..555 por cima da emenda (o cinza
+  dele cobre 532..536, o cap em 537) e a coluna 1 em 589 = 537 + 52 (o canto
+  (52, 19) da própria janela, sem inset).
+- Com o catálogo fechado (nenhuma categoria escolhida) a barra fecha no fim
+  da área do sort: o endcap no 503 do script (588 no cliente, 23 px) com o
+  repeat (`0x4CC48AA6`) esticado do 265 até lá — o gradiente da arte corre
+  até o cap (medido em 800x600); aberto, o endcap volta ao próprio 447
+  (532 no cliente) e o repeat fica no 265..447 do script.
+- A grade também não anda: coluna 1 em x 589 e topo da linha 1 em
+  `altura − 129` (471 em 800x600, 591 em 1280x720); placas 44x44 de passo
+  48, duas linhas (a expandida `0x2000`, quatro).
+- Quem estica é só o catálogo: o cap final (20 px, `0x1003`/`0x2003`) fica
+  com a borda direita visível em `largura − 30`, o miolo (`…02`) se estica
+  até ele e o bloco de células (colunas × 48 − 4) cabe até lá — 3 colunas
+  em 800x600 e 13 em 1280x720. O `▶` e o `⌃` vão por cima do cap (o glifo
+  do `▶` em `largura − 61`, o `⌃` 3 px à direita) e o `◀` some na página 0.
+- A barra de rolagem (`0x1008`, 12 px de altura, cantos de raio 4 — a
+  coluna extrema abrange 8 das 12 linhas) vai da coluna 1 (x 589) até
+  `largura − 72` (o navy fecha em 1207, o papel em 1208): 619 px = colunas
+  × 48 − 5; o trilho (135,163,152) sob 1 px de navy no topo e na base, com
+  o fill alcançando as pontas, e o knob — 2 px de navy em todas as bordas,
+  1 px de (157,171,241) por dentro nas pontas, (174,189,255) no miolo —
+  preenche a fração da página sobre o bloco: 304 px de 619 numa lista de
+  26 de 53.
+
+**Para nós**: o app segue isso (puck em x 0 com a pílula 3 px acima do pé
+do script, a janela 5 px à direita do slot — cap em 537 —, o grid no canto
+(52, 19) da própria janela, o endcap em 532 com o repeat esticado até o fim
+da barra quando o catálogo está fechado, as colunas dinâmicas até o cap) e
+bate a captura do jogo em 1280x720 (cap 1244..1250, `▶`
+(1219,615)-(1231,662), `⌃` (1222,584)-(1230,596), o trilho de 589 ao navy
+em 1207 com o papel em 1208); ficam de nota de polimento as bevels do knob
+(±1 px) e o raio das placas (8 no app; as artes do jogo divergem ±1 px nas
+colunas extremas).
 
 ---
 
@@ -1169,6 +1232,23 @@ nos pisos; `"brick"`, `"masonry"`, `"siding"`, `"poured"`, `"paint"`,
 `cTSWinProcCatalog::LoadFloorPatterns/LoadWallPatterns`, BV
 `0xa320bc`/`0xa32238`). O painel de telhados automáticos é o `0xAC` (C100 sem beiral, C200
 triangular curto, C500/C600 mistos, C300 remover, C700 laje, C400 preservar).
+
+**Auditoria do port (21/10).** Sem as capturas (não estão nesta máquina), o
+painel foi conferido contra esta tabela e contra o censo do catálogo de
+construção (`s2pkg catalog <Res> --installation --build`, novo: os objetos por
+campo 69 "build mode type" e campo 74 "build Mode Subsort"). O censo: tipo 1
+→ subsorts 0x08 (24), 0x20 escadas (13), 0x40 (5), 0x100 (7), 0x200 colunas
+(10), 0x400 garagens (7), 0x800 elevadores (4), 0x1000 cornijas (58); tipo 4
+→ 0x01 árvores (35), 0x02 arbustos (13), 0x04 flores (27), 0x10 as ferramentas
+de jardim (11); tipo 8 → 0x01 portas (57), 0x02 janelas de 2 andares (3),
+0x04 janelas (67), 0x08 portões (15), 0x10 arcos (21), 0x100 (4). As três
+lacunas que a tabela denuncia e o port tinha: **a categoria A800 jardinagem
+inteira** (não havia `case 8`), **as colunas BA20** (o subsort 2 do painel de
+diversos) e **os pincéis B751–B753** (o subsort 5 do painel de terreno, as
+ferramentas de jardim). As três foram implementadas; o `B620` (a ferramenta de
+corrimão) já estava no clique do subsort, e o resto da tabela (portas, pisos,
+revestimentos, escadas, terreno, telhados, lareiras, piscinas, cercas e portões)
+bate com o port.
 
 ### 7.9 O resto, resumido
 

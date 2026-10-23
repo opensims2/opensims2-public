@@ -4,6 +4,7 @@
 #include "prim_cmds.hpp"
 #include "effects_cmds.hpp"
 #include "shadow_cmds.hpp"
+#include "script_cmds.hpp"
 #include "simlook_cmds.hpp"
 #include "material_cmds.hpp"
 #include "audio_cmds.hpp"
@@ -419,6 +420,10 @@ int cmdLot(const std::filesystem::path& root, const std::vector<std::filesystem:
                 std::printf("  %s\n", w.c_str());
             for (const auto& w : model.warnings)
                 std::printf("  %s\n", w.c_str());
+        } catch (const EmptyLotPackage& e) {
+            // The empty lot package (the 96-byte stub): the game loads it as a
+            // lot with nothing in it, so it is not an error.
+            std::printf("%s: %s\n", path.filename().string().c_str(), e.what());
         } catch (const std::exception& e) {
             std::printf("%s: error: %s\n", path.filename().string().c_str(), e.what());
             ++failed;
@@ -821,6 +826,10 @@ int cmdLotRun(const std::vector<std::filesystem::path>& lots, long ticks, bool l
         Lot lot;
         try {
             lot = Lot::load(pkg);
+        } catch (const EmptyLotPackage& e) {
+            // The empty lot package (the 96-byte stub): not an error.
+            std::printf("%s: %s\n", path.filename().string().c_str(), e.what());
+            continue;
         } catch (const std::exception& e) {
             std::printf("%s: error: %s\n", path.filename().string().c_str(), e.what());
             ++failed;
@@ -1057,6 +1066,9 @@ int usage() {
                          "       s2pkg lot <Res-dir> <lot.package>...\n"
                          "       s2pkg lot-walls <lot.package> [x0,y0,x1,y1]\n"
                          "       s2pkg bhav <Res-dir> <group-hex> <instance-hex> [arg...]\n"
+                         "       s2pkg lua <file.objLua>\n"
+                         "       s2pkg lua-script <Res-dir> <name>\n"
+                         "       s2pkg lua-prelude <Res-dir> <name|*> [text]\n"
                          "       s2pkg bhav-sweep <Res-dir>\n"
                          "       s2pkg lot-run <lot.package>... [--ticks N] [--list] [--trace object-id] [--init]\n"
                          "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s", animUsage(), materialUsage(), audioUsage(), movieUsage(), uiUsage(), hoodUsage(), hoodPlayUsage(), primUsage(), pieUsage(), stateUsage(), saveUsage(), autonomyUsage(), wantsUsage(), routeUsage(), buyUsage(), buildUsage(), effectsUsage(), simLookUsage(), casUsage(), tutorialUsage(), shadowUsage());
@@ -1091,6 +1103,8 @@ int main(int argc, char** argv) {
         if (int rc = shadowCommand(cmd, argc, argv); rc >= 0)
             return rc;
         if (int rc = simLookCommand(cmd, argc, argv); rc >= 0)
+            return rc;
+        if (int rc = scriptCommand(cmd, argc, argv); rc >= 0)
             return rc;
         if (int rc = tutorialCommand(cmd, argc, argv); rc >= 0)
             return rc;
@@ -1162,6 +1176,11 @@ int main(int argc, char** argv) {
         if (cmd == "texture" && argc == 5) return cmdTexture(pkg, parseTgi(argv[3]), argv[4]);
         if (cmd == "mesh" && argc == 5) return cmdMesh(pkg, parseTgi(argv[3]), argv[4]);
         return usage();
+    } catch (const EmptyLotPackage& ex) {
+        // The empty lot package (the 96-byte stub): the game loads it as a lot
+        // with nothing in it; the soak counts it apart from the errors.
+        std::fprintf(stderr, "empty lot package: %s\n", ex.what());
+        return 0;
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "error: %s\n", ex.what());
         return 1;

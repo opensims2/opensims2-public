@@ -302,8 +302,9 @@ int slotPlacementError(VM& vm, const Object& x, const Object& container, int slo
 
 void placeInSlot(VM& vm, Object& x, const Object& container, int slot) {
     vm.setContainer(x, container.id, int16_t(slot));
-    x.position = container.position;
+    vm.setPosition(x, container.position);
     x.data[objdata::Room] = container.data[objdata::Room];
+    vm.noteRoomChanged(x.id);
     x.data[objdata::Direction] = container.data[objdata::Direction];
 }
 
@@ -410,7 +411,7 @@ std::vector<Held> heldParts(VM& vm, const Placement& p) {
             saved.push_back({part.id, o->position, o->data[objdata::Direction]});
             const bool there = !part.at && o->position.inWorld() && !o->data[objdata::ContainerId] && VM::tileOf(*o) == part.tile;
             if (!there)
-                o->position = placeOf(part);
+                vm.setPosition(*o, placeOf(part));
             o->data[objdata::Direction] = int16_t(p.direction);
             places.push_back(o->position);
         }
@@ -425,8 +426,10 @@ std::vector<Held> heldParts(VM& vm, const Placement& p) {
         out.push_back(std::move(h));
     }
     for (const Saved& s : saved)
-        if (Object* o = vm.object(s.id))
-            o->position = s.position, o->data[objdata::Direction] = s.direction;
+        if (Object* o = vm.object(s.id)) {
+            vm.setPosition(*o, s.position);
+            o->data[objdata::Direction] = s.direction;
+        }
     return out;
 }
 
@@ -997,18 +1000,22 @@ void applyPlacement(VM& vm, ObjectId id, const Placement& p) {
         if (!o)
             continue;
         o->data[objdata::Direction] = int16_t(p.direction);
-        o->position = part.at ? *part.at : Position{float(part.tile.x) + 0.5f, float(part.tile.y) + 0.5f, part.tile.level};
+        vm.setPosition(*o, part.at ? *part.at
+                                   : Position{float(part.tile.x) + 0.5f, float(part.tile.y) + 0.5f, part.tile.level});
         if (p.container) {
             vm.setContainer(*o, p.container, int16_t(p.slot));
             if (const Object* c = vm.object(p.container)) {
-                o->position = c->position;
+                vm.setPosition(*o, c->position);
                 o->data[objdata::Room] = c->data[objdata::Room];
+                vm.noteRoomChanged(o->id);
             }
         } else {
             vm.setContainer(*o, 0, -1);
             // SetLocation: the room (definition 2) where it now stands.
-            if (vm.world)
+            if (vm.world) {
                 o->data[objdata::Room] = vm.world->room(VM::tileOf(*o));
+                vm.noteRoomChanged(o->id);
+            }
         }
     }
     // The pool ladder's and diving board's portals follow it (build mode
@@ -1040,7 +1047,7 @@ void pickUp(VM& vm, ObjectId id) {
         Object* o = vm.object(part);
         if (!o)
             continue;
-        o->position = Position{};
+        vm.setPosition(*o, Position{});
         vm.setContainer(*o, 0, -1);
         runEntry(vm, part, entry::Pickup);
     }
@@ -1056,7 +1063,7 @@ ObjectId createGhost(VM& vm, uint32_t group, uint16_t definitionInstance) {
     const ObjectId leadId = lead.id;
     for (ObjectId part : groupOf(vm, leadId)) {
         Object* o = vm.object(part);
-        o->position = Position{};
+        vm.setPosition(*o, Position{});
         vm.setContainer(*o, 0, -1);
     }
     // As cEdithObjectModule::MakeNewOutOfWorldObject (docs/primitives-mac.md
@@ -1102,7 +1109,14 @@ void deleteGroup(VM& vm, ObjectId id) {
             deleteGroup(vm, h);
         runEntry(vm, part, entry::Delete);
         runEntry(vm, part, entry::Cleanup);
-        vm.threads.erase(part);
+        // The thread goes with it: it is killed (the status the run gives a
+        // thread whose object is gone) and dropped at the end of the tick (the
+        // tick walks the map by iterator, and the map's nodes are only stable
+        // while it is not erased).
+        if (auto it = vm.threads.find(part); it != vm.threads.end()) {
+            it->second.status = Thread::Status::Killed;
+            vm.deadThreads.emplace_back(part, it->second.serial);
+        }
         vm.removeObject(part);
     }
     vm.refreshObjectPortals();

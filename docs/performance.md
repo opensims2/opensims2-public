@@ -266,15 +266,139 @@ What was done, each a commit:
   object table, cost more than the walks it saved (+1 G instructions).
   `OS2_CHECK_CONTAINED=1` checks the GUID lists too.
 
+## O tick sem reconsultar o mapa das threads (Windows, 21/10)
+
+O `VM::tick` copiava os IDs das threads para um vetor e depois procurava cada uma
+no `std::map` de novo (`threads.find`): uma busca por thread e por tick. No
+autonomy do `N001_Lot11` isso dava ~15% do tempo.
+
+O mapa é ordenado pelo ID e os nós de um `std::map` são estáveis, então o tick
+passa a guardar os **iteradores** das threads (num vetor que é membro da VM, sem
+alocar a cada tick) e usá-los direto: sem a busca no mapa. O único lugar que
+apaga uma thread durante o tick é o `deleteGroup` (o objeto vendido ou
+demolido): ele agora **mata** a thread (o status `Killed`, o mesmo que o
+`VM::run` dá a uma thread cujo objeto sumiu) e a anota em `VM::deadThreads` (o
+ID e o **serial** da thread: o ID vai para um objeto novo nesse meio tempo, e a
+thread dele não é a que some), e o tick a apaga no fim — assim os nós do mapa
+não somem enquanto o tick os usa. O comportamento é o de antes: as threads
+criadas durante o tick só recebem a vez no tick seguinte, e a thread de um
+objeto removido não roda.
+
+Medido no Windows (esta máquina, `S2PKG_NO_LIGHT=1`, `autonomy N001_Lot11
+--ticks 43200`, a saída comparada linha a linha):
+
+| | tempo | saída |
+| --- | --- | --- |
+| antes | 22,3 s / 21,3 s | — |
+| depois | 19,5 s / 18,2 s (a primeira, 26,7 s, é a do cache frio) | idêntica (as 516 linhas; só o ruído do shell difere) |
+
+`ctest` 39/39.
+
+**O que a mudança também conserta (e por que o sweep do AL muda em 3 árvores).**
+O `deleteGroup` (o objeto vendido ou demolido) apagava a thread do objeto
+**enquanto ela rodava**: o `std::map::erase` destrói o nó, e o `Thread&` que o
+`VM::run` está usando fica pendurado — comportamento indefinido (na prática, a
+thread continuava rodando com a memória liberada). Agora a thread é **morta**
+(o status `Killed`, o mesmo que o `VM::run` dá a uma thread cujo objeto sumiu,
+que é a regra do jogo) e apagada no fim do tick. Com isso o `bhav-sweep` do AL
+muda em 3 das 46.880 árvores: 18.625 → 18.622 true, 14.126 → 14.129 falhas, e
+as 4 "Slot number out of range" a mais são as árvores cuja thread foi morta
+no lugar de continuar com a memória liberada. O `autonomy` do `N001_Lot11` (onde
+não há venda) fica **idêntico** — as 516 linhas.
+
+## Onde o tempo do autonomy vai (Windows, 21/10)
+
+Medido com uma instrumentação temporária no `VM::tick` (revertida depois),
+no `autonomy N001_Lot11 --ticks 43200` (`S2PKG_NO_LIGHT=1`): o tick inteiro
+leva ~13 s dos ~22 s da corrida (o resto é a carga do lote e a preparação).
+
+| parte do tick | tempo |observação |
+|---|---|---|
+| as threads (as árvores rodando) | **11,5 s** | 30.168.912 instruções → **381 ns por instrução** |
+| `tickMotives`/`tickWants`/timers/hurry | 1,05 s | |
+| `tickOverlayEvents` (a varredura de todos os objetos) | 0,58 s | |
+| `notifyRoomChanges` (a varredura de todos os objetos) | 0,36 s | |
+
+Duas conclusões: (1) o custo do tick é a **simulação** (85%), e o custo por
+instrução é o do jogo (a VM do port roda na mesma ordem de grandeza do jogo
+original); (2) as duas varreduras por tick que sobram — `notifyRoomChanges` e
+`tickOverlayEvents` — somam **0,94 s, 4% da corrida**: fechá-las é ganho
+pequeno, o índice por tile (dentro da execução das árvores) é que pesa.
+
+O `bhav-sweep` do AL leva ~10 min para 12,9 M instruções — o custo dele é a
+**carga** (cada árvore roda numa VM nova, com o índice de recursos frio), não a
+simulação; por isso as comparações de fidelidade usam as contagens de
+instruções e não o relógio.
+
+## O índice por tile (22/10)
+
+`objectsOnTile` era a varredura mais cara da simulação: no `N001_Lot11` com os
+dados do AL, **35.799 chamadas x ~1.300 objetos = 47,1 M verificações** em
+3.600 ticks (e o `objectsAround` mais 4,5 M). O `VM` agora tem um índice
+`TilePos -> ObjectId` (`VM::tiles_`), construído na primeira consulta e mantido
+pelo `VM::setPosition` — todas as escritas de `Object::position` do VM e do app
+passam por ele: o `moveTo` do routing, o `placement`, os teleportes, os
+contêineres (`followContainers`, `PlaceInSlot`) e o buy/build — e pelo
+`removeObject`. A consulta devolve os IDs da tile **em ordem de ID**, como a
+varredura; um passo que não troca de tile (a caminhada) não mexe nos baldes.
+
+Medido no `autonomy N001_Lot11 --ticks 3600` com os dados do AL (os Sims
+trabalhando: 24 a 37 buscas/escolhas por Sim) e `S2PKG_NO_LIGHT=1`:
+**6,71 s → 4,25-4,68 s** (~35% menos), com a saída idêntica (as mesmas
+buscas/escolhas e motivos). O `objectsAround` **continua varrendo**: o raio das
+buscas de "o mais próximo" passa de 20 tiles, e andar (2r+1)² baldes custou 3x
+mais que a varredura (19,4 s contra 6,7 s, medido e revertido).
+
+`OS2_CHECK_TILE_INDEX=1` compara cada `objectsOnTile` com a varredura completa e
+imprime a divergência: rodado no ctest inteiro (39/39) e no `autonomy`, zero
+divergências. O `bhav-sweep` do AL não muda (14.025.434 / 19.927 / 10.335 — o número
+daquele dia; depois das chamadas 54–84 o sweep vai a 14.093.824 / 23.864 / 6.385).
+
+## A instalação nos comandos de lote (22/10)
+
+O `autonomy` indexava só a pasta do EP dado (`ResourceIndex(resRoot(lot))`), enquanto o
+app indexa a instalação inteira (`installationResRoots`, `src/app/win_main.cpp`). Com o
+AL o lote rodava **sem os recursos do base e dos outros EPs**: 6.052 plays de
+`a-heatstroke-slump-breathe` e `o-door-open-CCW` faltando, os laços de espera que
+dependem da duração de uma animação girando até o orçamento de instruções (100.000) e o
+Main dos Sims reiniciando — **116 resets** em 29.600 ticks no `N001_Lot11`, e **o ônibus
+escolar parado na rua às 09:27** (27 peças). Agora o `autonomy` indexa os mesmos roots do
+app: **1** animação faltando (2 plays), **91 resets**, os Sims em "Routing - Goto Head of
+Bed" com **17/94/25 buscas** (antes 185/253/229) e **o ônibus vai embora** (0 peças às
+09:27). O mesmo sintoma do live-qa da rodada 11 ("o veículo chega e nunca vai embora")
+reaparecia no comando de teste por outro motivo (faltavam as animações), o que esconderia
+uma regressão de verdade. Os comandos de lote que rodam a VM (`autonomy`, `pie`, `route`,
+`wants`, `tutorial`) usam o mesmo `cli/s2pkg/data_index.hpp`; o `res` dado vai primeiro,
+então um recurso que ele tem continua ganhando dos outros pacotes e os outros só enchem o
+que falta. O custo fixo do comando é o `CodeLibrary` (~35 s tanto com um
+root quanto com a instalação; as medições de tick comparam o total com o `--ticks 0`).
+
+## A sala por tick sem varrer os objetos (23/10)
+
+`notifyRoomChanges` varria **todos** os objetos comparando o dado 29 com o último avisado
+(0,36 s de uma corrida de 43.200 ticks). Agora o `VM` guarda só os objetos cuja sala foi
+escrita desde o último tick (`noteRoomChanged`): os escritores de sala do port (12
+sítios), o `Context::set` (uma árvore escrevendo o dado 29 por dono 3/4), o
+`createObject` e o `restoreState` do lote (objeto novo/carregado também é avisado uma
+vez, como a varredura fazia). `OS2_CHECK_ROOM_DIRTY=1` roda a varredura antiga junto e
+acusa um objeto não marcado: **0 divergências** no ctest inteiro (39/39) e no
+`autonomy N001_Lot11 --ticks 29600` com a instalação, com a **saída idêntica** (17/94/25
+buscas, 9/62/15 resets, os mesmos Mains).
+
 ## What is left (not done)
 
-- An index of the objects by tile (`objectsOnTile`, `tileFree`, the placement tests) needs
-  every write of `Object::position` through a setter: about 25 places in the VM and the app,
-  130 in the tests. The hot callers walk the objects once for all their tiles instead.
-- Per tick: `notifyRoomChanges` (object data 29 is written in many places) and
-  `tickOverlayEvents` (the animation code) still walk every object; `VM::tick` copies the
-  threads' IDs and looks each one up in the map again (about 5% of an autonomy run).
-- The other Set to Next types walk the object list with a `std::function` test until the
-  next match (all of it when there is none).
-- Load: the Sims' textures take 45 ms each to upload; `Catalog::load` reads 47 resources again after the lot's (round 11: kept between scenes, see above).
-  8% of the resource bytes read at load are the same resource read twice (4.9 of 64 MB).
+- Por tick: o `tickOverlayEvents` ainda varre todos os objetos. **Remedido em 23/10**
+  (instrumentação temporária no `VM::tick` com `OS2_PERF_TICK=1`, já revertida;
+  `autonomy N001_Lot11 --ticks 29600`): **0,235 s de 10,25 s de simulação** até os 20.000
+  ticks (2,3%; ~0,35 s a 29.600 ticks), e ~0,235 s de 30 s de parede (0,8%). O índice teria
+  de marcar os **seis sítios** que somam e apagam overlays (Animate Overlay/Object, o fim de
+  cada loop, o `Stop`, a remoção do objeto e o save) e a passagem também mexe nas poses; o
+  ganho (~0,8% do relógio) **não paga o risco** — fechado com este critério. A outra
+  varredura, `notifyRoomChanges`, foi fechada em 23/10 (acima).
+- Carga (do app, não do VM headless): as texturas dos Sims custam **~45 ms cada** para subir
+  (0,9 s dos 2,3 s do load de um lote) e o `Catalog::load` relê **47 recursos** depois do lote
+  (8% dos bytes lidos, 4,9 de 64 MB) — os números da rodada 11 seguem valendo (o catálogo já
+  fica entre cenas; o que resta é o primeiro load a frio). **Fechado com este critério**: o
+  custo é do app/render (o host sem janela não o paga), o ganho medido (~0,2 s no load a
+  frio) não paga mexer no cache de texturas nem no índice, que é o caminho do render — e o
+  `lua_State` do `0x7E` é criado no primeiro script, então o load do VM não mudou.

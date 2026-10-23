@@ -292,9 +292,13 @@ static void testYieldAndErrors() {
     fx.vm.run(t);
     check(t.status == Thread::Status::Finished && t.temps[0] == 1, "resumes after yields");
 
-    fx.code.add(kObjGroup, 0x1001, tree({instr(0x7E, T, F)})); // not a primitive of the game
+    fx.code.add(kObjGroup, 0x1001, tree({instr(0x04, T, F)})); // an opcode the port has no handler for
     t = fx.run(0x1001);
     check(t.status == Thread::Status::Failed && t.error.find("not supported") != std::string::npos, "unknown primitive fails");
+
+    fx.code.add(kObjGroup, 0x1007, tree({instr(0x7E, F, F)}));
+    t = fx.run(0x1007);
+    check(t.status == Thread::Status::Finished && !t.result, "Run Script (0x7E) answers false without a Lua interpreter");
 
     fx.code.add(kObjGroup, 0x1002, tree({expr(Temp, 0, Div, Lit, 0, T, F)}));
     t = fx.run(0x1002);
@@ -1032,10 +1036,12 @@ static void testGenericSimsCall() {
                       call(25, go(14)),                                   // selected Sim := 2
                       call(48, E, go(15)),                                // no remapped IDs
                       call(52, E, go(16)),                                // wall in front: no world, no wall
-                      call(60, T)}));                                     // no such call
+                      call(60, go(17)),                                   // the AL's calls beyond the base's 54: an engine request
+                      call(85, T)}));                                     // no such call (the AL's table goes to 0x54)
     Thread t = fx.run(0x1000);
     check(t.status == Thread::Status::Failed && t.error.find("Invalid global sim call.") != std::string::npos &&
-              fx.vm.engineRequests.size() == 1 && fx.vm.engineRequests[0].call == 38 &&
+              fx.vm.engineRequests.size() == 2 && fx.vm.engineRequests[0].call == 38 &&
+              fx.vm.engineRequests[1].call == 60 &&
               sim.person->data[persondata::FamilyNumber] == 3 && fx.vm.neighbors[5].personData[persondata::FamilyNumber] == 3 &&
               fx.vm.neighbors[6].personData[persondata::FamilyNumber] == 1 && !fx.vm.buildBuyEnabled &&
               fx.vm.globals[global::Paused] == 1 && fx.vm.globals[global::SelectedPersonId] == 2,
@@ -1671,6 +1677,107 @@ static void testSlots() {
           "unknown room values fail");
 }
 
+// Look At's slots (byte 14: 1 targeting, 2 routing, 3 containment = the
+// target's SLOT entries of type 4, 3 and 0): the index is checked against
+// that type's count (past it error 0x1B) and the request keeps the slot
+// (view.cpp; the app aims at the entry's bone or its stored offset).
+static void testLookAtSlots() {
+    Fixture fx;
+    fx.code.add(kObjGroup, 0x80, definition(0x0C0C0C01, true)); // the Sim
+    ObjectDefinition shelf = definition(0x0C0C0C02);
+    shelf.fields[(0x68 - 0x44) / 2] = 0x81; // slots id
+    fx.code.add(kObjGroup, 0x81, std::move(shelf));
+    Slots sl;
+    sl.slots.resize(5);
+    sl.slots[1].type = 3; // one routing slot
+    sl.slots[3].type = 4; // two targeting slots
+    sl.slots[4].type = 4; // (the rest are containers)
+    fx.code.add(kObjGroup, 0x81, std::move(sl));
+    Object& me = fx.vm.instantiate(kObjGroup, 0x80);     // id 1, the Sim
+    Object& target = fx.vm.instantiate(kObjGroup, 0x81); // id 2
+    fx.vm.setContainer(target, me.id, 0);                // somewhere to be looked at
+    // Look At: the target from the stack object, 90/2 degrees a second,
+    // byte 8 the slot index and byte 14 its kind.
+    auto lookAt = [](uint8_t index, uint8_t kind) {
+        return instr(0x6E, T, F, {0, StackId, 2, 0, 90, 0, 0, 0, index, 0, 0, 0, 0, 0, kind, 0});
+    };
+    fx.code.add(kObjGroup, 0x1000, tree({lookAt(1, 1)}));
+    Thread t = fx.vm.start(me.id, 0x1000, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Finished && t.result && me.lookAt.has_value() &&
+              me.lookAt->target == target.id && me.lookAt->slotKind == 1 && me.lookAt->slotIndex == 1,
+          "a targeting slot of the target is kept");
+    fx.code.add(kObjGroup, 0x1001, tree({lookAt(0, 3)}));
+    t = fx.vm.start(me.id, 0x1001, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Finished && t.result && me.lookAt->slotKind == 3 && me.lookAt->slotIndex == 0,
+          "a containment slot");
+    fx.code.add(kObjGroup, 0x1002, tree({lookAt(0, 2)}));
+    t = fx.vm.start(me.id, 0x1002, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Finished && t.result && me.lookAt->slotKind == 2, "a routing slot");
+    fx.code.add(kObjGroup, 0x1003, tree({lookAt(2, 3)}));
+    t = fx.vm.start(me.id, 0x1003, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Failed && t.error.find("Slot number out of range") != std::string::npos &&
+              t.error.find("slot 2 of object 2") != std::string::npos,
+          "past the containment slots is error 0x1B");
+    fx.code.add(kObjGroup, 0x1004, tree({lookAt(2, 1)}));
+    t = fx.vm.start(me.id, 0x1004, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Failed && t.error.find("Slot number out of range") != std::string::npos,
+          "past the targeting slots too");
+    fx.code.add(kObjGroup, 0x1005, tree({lookAt(0, 0)}));
+    t = fx.vm.start(me.id, 0x1005, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Finished && t.result && me.lookAt->slotKind == 0, "no slot: the default point");
+}
+
+// RayTrace (0x78): the points are the slots of the kind (the Look At's byte
+// 14 convention: 1/2/3 = the SLOT entries of type 4/3/0 and the index inside
+// them; past the count, error 0x1B) and, with no kind, the middle of the
+// object's box (ours: the tile it stands on).
+static void testRayTraceSlots() {
+    Fixture fx;
+    fx.vm.world = World(10, 10);
+    fx.vm.world->addWall(1, 3, 2, 3, 3); // between the tiles (2,2) and (3,2)
+    ObjectDefinition from = definition(0x0C0C0C01);
+    from.fields[(0x68 - 0x44) / 2] = 0x81; // its slots
+    fx.code.add(kObjGroup, 0x80, std::move(from));
+    fx.code.add(kObjGroup, 0x82, definition(0x0C0C0C02));
+    Slots sl;
+    sl.slots.resize(2);
+    sl.slots[0].type = 0;                     // a containment slot
+    sl.slots[0].offset = {1.0f, 0.0f, 0.0f}; // a tile to the right
+    sl.slots[1].type = 3;                     // and a routing slot
+    fx.code.add(kObjGroup, 0x81, std::move(sl));
+    Object& me = fx.vm.instantiate(kObjGroup, 0x80);     // id 1, the source
+    Object& target = fx.vm.instantiate(kObjGroup, 0x82); // id 2
+    me.position = {2.5f, 2.5f, 1};
+    target.position = {3.5f, 2.5f, 1};
+    // RayTrace: the source's point (kind byte 4, index byte 5) to the target's
+    // (bytes 11/12), the result in temp 0.
+    auto ray = [](uint8_t kind, uint8_t index) {
+        return instr(0x78, T, F, {0, 0x07, 1, 0, kind, index, 0, 0, 0x07, 2, 0, 0, 0, 0, 0});
+    };
+    fx.code.add(kObjGroup, 0x1000, tree({ray(3, 0)})); // the containment slot
+    Thread t = fx.vm.start(me.id, 0x1000, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Finished && t.result && t.temps[0] == target.id,
+          "the ray starts at the source's containment slot");
+    fx.code.add(kObjGroup, 0x1001, tree({ray(0, 0)})); // no slot: the object's own tile
+    t = fx.vm.start(me.id, 0x1001, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Finished && !t.result && t.temps[0] == -1,
+          "without a slot the ray starts at the object's tile, where the wall is");
+    fx.code.add(kObjGroup, 0x1002, tree({ray(3, 1)})); // past the containment slots
+    t = fx.vm.start(me.id, 0x1002, {}, target.id);
+    fx.vm.run(t);
+    check(t.status == Thread::Status::Failed && t.error.find("Slot number out of range") != std::string::npos &&
+              t.error.find("slot 1 of object 1") != std::string::npos,
+          "past the slots of the kind is error 0x1B");
+}
+
 // Scheduler: Init runs to completion (its sleeps do not wait for ticks), Main
 // gets a turn per tick and starts again when it returns; objects created while
 // running are initialized; the clock keeps the time globals.
@@ -1979,7 +2086,9 @@ static void testSetToNextWhereVersion() {
 // Reset): it starts over next tick, and the VM keeps what failed.
 static void testResetAfterError() {
     Fixture fx;
-    fx.code.add(kObjGroup, 0x80, definition(0x0E0E0E0E));
+    ObjectDefinition d = definition(0x0E0E0E0E);
+    d.fields[(0x40 + 2 * 45 - 0x44) / 2] = 250; // 45 "Niceness Multiplier"
+    fx.code.add(kObjGroup, 0x80, d);
     ObjectFunctions f;
     f.functions = {{0, 0}, {0, 0x1001}};
     fx.code.add(kObjGroup, 0x80, f);
@@ -1995,19 +2104,51 @@ static void testResetAfterError() {
               fx.vm.threads.at(o.id).status == Thread::Status::Running,
           "a failed Main is reset and runs again next tick");
     // Without a cleanup tree, Reset zeroes the object data but its list
-    // (direction, room, ...), sets the render colours to 255 and runs Init.
+    // (direction, room, ...), sets the niceness score 7 to OBJD field 45
+    // (GetDefaultNicenessMultiplier) and the render colours to 255, and runs
+    // Init.
     o.data[objdata::Direction] = 4;
     o.data[objdata::Room] = 3;
     o.data[30] = 77;
     o.data[objdata::Flags] = 0x40;
+    o.data[7] = 999; // "Niceness Score": the reset takes it from field 45
     fx.vm.tick();
     check(o.data[objdata::Direction] == 4 && o.data[objdata::Room] == 3 && o.data[30] == 0 &&
-              o.data[objdata::Flags] == 0 && o.data[72] == 0xFF && o.data[23] == 2 && o.data[objdata::ObjectId] == o.id &&
+              o.data[objdata::Flags] == 0 && o.data[7] == 250 && o.data[72] == 0xFF && o.data[23] == 2 && o.data[objdata::ObjectId] == o.id &&
               o.attributes[0] == 3,
           "the reset after an error zeroes the object data but its list, and keeps the attributes");
     fx.vm.resetOnError = false;
     fx.vm.tick();
     check(fx.vm.threads.at(o.id).status == Thread::Status::Failed, "without resets a failed Main stays failed");
+}
+
+// The interpreter's variable sets hold the AL's own trees: object data 114,
+// globals 60, person data 231 (docs/primitives-mac.md §4j: the BV binary's
+// 113/58/204 plus the one past each that the AL reaches; the base's 88/54/170
+// were what the port pinned, and the AL sweep of 18/10 showed the trees
+// reading past them).
+static void testVariableSets() {
+    Fixture fx;
+    fx.obj().person.emplace();
+    fx.code.add(kObjGroup, 0x1000, tree({expr(Data, 0x71, Assign, Lit, 5, go(1), E),
+                                         expr(Global, 0x3B, Assign, Lit, 6, go(2), E),
+                                         expr(PData, 0xE6, Assign, Lit, 7, T, E)}));
+    Thread t = fx.run(0x1000);
+    check(t.status == Thread::Status::Finished && fx.obj().data[0x71] == 5 && fx.vm.globals[0x3B] == 6 &&
+              fx.obj().person->data[0xE6] == 7,
+          "the AL's last object data (0x71), global (0x3B) and person data (0xE6) work");
+    fx.code.add(kObjGroup, 0x1001, tree({expr(Data, 0x72, Assign, Lit, 1, T, E)}));
+    t = fx.run(0x1001);
+    check(t.status == Thread::Status::Failed && t.error.find("object data 114 out of range (114)") != std::string::npos,
+          "object data 0x72 is out of range");
+    fx.code.add(kObjGroup, 0x1002, tree({expr(Global, 0x3C, Assign, Lit, 1, T, E)}));
+    t = fx.run(0x1002);
+    check(t.status == Thread::Status::Failed && t.error.find("global 60 out of range (60)") != std::string::npos,
+          "global 0x3C is out of range");
+    fx.code.add(kObjGroup, 0x1003, tree({expr(PData, 0xE7, Assign, Lit, 1, T, E)}));
+    t = fx.run(0x1003);
+    check(t.status == Thread::Status::Failed && t.error.find("person data 231 out of range (231)") != std::string::npos,
+          "person data 0xE7 is out of range");
 }
 
 // Set to Next 3 on the last part of a multi-tile object (the others burnt)
@@ -2119,8 +2260,9 @@ static void testRoomChanged() {
           "room changed: a door portal gets its front and back rooms, other parts their room and -1");
     fx.vm.tick();
     check(front.attributes[5] == 1 && back.attributes[5] == 1 && toy.attributes[5] == 1, "room changed runs once while the room stays");
-    toy.position = {7.5f, 1.5f, 1};
+    fx.vm.setPosition(toy, {7.5f, 1.5f, 1});
     toy.data[objdata::Room] = fx.vm.world->room(VM::tileOf(toy));
+    fx.vm.noteRoomChanged(toy.id); // the writer's mark: the per-tick pass uses it instead of scanning
     fx.vm.tick();
     check(toy.attributes[3] == 2 && toy.attributes[5] == 2, "room changed runs again when the object's room changes");
 }
@@ -2190,6 +2332,8 @@ int main() {
     testVisibleObjects();
     testResumeSavedLot();
     testSlots();
+    testLookAtSlots();
+    testRayTraceSlots();
     testScheduler();
     testRunTreeByNameNow();
     testClockGlobals();
@@ -2197,6 +2341,7 @@ int main() {
     testMakeNewCharacter();
     testReaperNeighborAndDyingObjects();
     testResetAfterError();
+    testVariableSets();
     testSetToNextWhereVersion();
     testLonePartOfMultiTile();
     if (failures)

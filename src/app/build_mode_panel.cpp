@@ -355,6 +355,8 @@ std::vector<BuildMode::Item> BuildMode::items() {
                 it.image = textureThumbnail(p.guid, p.texture);
                 out.push_back(std::move(it));
             }
+        if (subsort_ == 0 || subsort_ == 5) // B751-B753 the brushes (build type 4, bit 0x10)
+            objectItems(4, 0x10);
         break;
     }
     case 9: {
@@ -404,6 +406,15 @@ std::vector<BuildMode::Item> BuildMode::items() {
         break;
     }
     case 3: objectItems(8, doorSubsort(subsort_)); break;
+    case 8: { // B820 trees, B830 bushes, B840 flowers, B850 all (build type 4)
+        // (the build catalog's census: the trees in the bit 1, the bushes in
+        // the bit 2, the flowers in the bit 4; the bit 0x10 are the garden
+        // tools, the brushes of the terrain panel).
+        const uint16_t bits = subsort_ == 2 ? 0x01 : subsort_ == 3 ? 0x02 : subsort_ == 4 ? 0x04 : 0x07;
+        if (subsort_ == 0 || subsort_ >= 2)
+            objectItems(4, bits);
+        break;
+    }
     case 6: // B630 staircases (build type 1, subsort 0x20; placed with the object tool)
         if (subsort_ == 0 || subsort_ == 3)
             objectItems(1, 0x20);
@@ -420,6 +431,8 @@ std::vector<BuildMode::Item> BuildMode::items() {
     case 4: patternItems(true, kFloorSubsorts, std::size(kFloorSubsorts)); break;
     case 5: patternItems(false, kWallSubsorts, std::size(kWallSubsorts)); break;
     case 10:
+        if (subsort_ == 2)
+            objectItems(1, 0x200); // BA20 columns (build type 1, subsort 0x200)
         if (subsort_ == 6)
             objectItems(8, 8); // gates
         if (subsort_ == 3) // BA30 fireplaces (fireplaces.txt, catalog text "build" 144)
@@ -535,7 +548,11 @@ UiScreen BuildMode::screen(int width, int height) {
     }
     const UiElement& puck = puck_.roots.front();
     const auto pa = puck.area();
-    const float puckX = 8, puckY = float(height) - float(pa[3] - pa[1]);
+    // The pod as in Buy and Live: the client's left edge and 3 px above the
+    // script's own reach to its foot (the pill's art at 3,396 at 800x600,
+    // measured; the join below rides the same place; docs/buy-build-mac.md
+    // §1.6).
+    const float puckX = 0, puckY = float(height) - float(pa[3] - pa[1]) - 3;
     float x0 = puckX, y0 = puckY - 137;
     if (const UiElement* a = puck.child(0x4BDEFFAA))
         if (const UiElement* b = root.child(0x0000AAAA))

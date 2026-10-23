@@ -1320,7 +1320,8 @@ Ghidra MCP, só leitura, nos dois programas: o BV (`sims2_bv.ppc`, com os
 nomes do `symxfer`) e o **base 1.0** (`sims2_base_1.0.ppc`, sem nomes,
 achado pelas strings `GUOBOff`/`VisGUOBMaterial`/`groundshadow` e pelos
 mesmos campos). Onde os dois diferem vale o base, que é o jogo de 2004 (como
-nas outras rodadas: "0x58 no base (= o opensims2)"); o BV fica anotado.
+nas outras rodadas: "0x58 no base" — na época o port usava 88; desde 18/10 usa
+os conjuntos do AL, 114/60/231); o BV fica anotado.
 
 ### 12.1 As opções e os estilos, corrigidos
 

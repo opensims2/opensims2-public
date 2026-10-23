@@ -158,8 +158,7 @@ void CodeLibrary::add(uint32_t group, uint16_t instance, Slots sl) {
     slots_[key(group, instance)] = std::make_unique<Slots>(std::move(sl));
 }
 
-std::optional<uint16_t> CodeLibrary::behaviorByName(uint32_t group, const std::string& name) {
-    if (!namesScanned_ && index_) {
+std::optional<uint16_t> CodeLibrary::behaviorByName(uint32_t group, const std::string& name) {    if (!namesScanned_ && index_) {
         namesScanned_ = true;
         for (const auto& loc : index_->ofType(kTypeBhav)) {
             const auto& tgi = loc.entry->tgi;
@@ -180,9 +179,74 @@ std::optional<uint16_t> CodeLibrary::behaviorByName(uint32_t group, const std::s
 // lots): the index cannot address them, since they all share it.
 constexpr uint32_t kPackageLocalGroup = 0xFFFFFFFF;
 
+void CodeLibrary::scanLuaScripts() {
+    if (luaScanned_)
+        return;
+    luaScanned_ = true;
+    if (!index_)
+        return;
+    // The ObjectScripts resources of the EPs: "u32 0, u32 length, the name, then
+    // the Lua 5.0 chunk" (docs/lua-scripts.md). 0x9012468B are the .objLua
+    // scripts, 0x9012468A the .globalObjLua preludes.
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> preludes;
+    for (const uint32_t type : {0x9012468Bu, 0x9012468Au}) {
+        for (const auto& loc : index_->ofType(type)) {
+            std::vector<uint8_t> bytes;
+            try {
+                bytes = index_->read(loc);
+            } catch (const std::exception&) {
+                continue;
+            }
+            static const uint8_t signature[4] = {0x1B, 'L', 'u', 'a'};
+            const auto at = std::search(bytes.begin(), bytes.end(), signature, signature + 4);
+            if (at == bytes.end() || at - bytes.begin() < 8)
+                continue;
+            std::string name(bytes.begin() + 8, at);
+            if (name.empty())
+                continue;
+            std::vector<uint8_t> chunk(at, bytes.end());
+            if (type == 0x9012468Au)
+                preludes.emplace_back(std::move(name), std::move(chunk));
+            else
+                luaScripts_.emplace(std::move(name), std::move(chunk)); // the first of two wins, as everywhere
+        }
+    }
+    // The preludes: Global first (the base classes and the scopes), then by name.
+    std::sort(preludes.begin(), preludes.end(), [](const auto& a, const auto& b) {
+        if ((a.first == "Global") != (b.first == "Global"))
+            return a.first == "Global";
+        return a.first < b.first;
+    });
+    for (auto& p : preludes) {
+        luaPreludeChunks_.push_back(std::move(p.second));
+        luaPreludeNames_.push_back(std::move(p.first));
+    }
+}
+
+const std::vector<uint8_t>* CodeLibrary::luaScript(const std::string& name) {
+    scanLuaScripts();
+    const auto it = luaScripts_.find(name);
+    return it == luaScripts_.end() ? nullptr : &it->second;
+}
+
+const std::vector<std::vector<uint8_t>>& CodeLibrary::luaPreludes() {
+    scanLuaScripts();
+    return luaPreludeChunks_;
+}
+
+const std::vector<std::string>& CodeLibrary::luaPreludeNames() {
+    scanLuaScripts();
+    return luaPreludeNames_;
+}
+
 void CodeLibrary::indexDefinition(uint32_t group, uint16_t instance, const ObjectDefinition& d) {
     // Keeps the first OBJD of a GUID or name, like the rest of the index.
-    byGuid_.emplace(d.guid(), std::pair{group, instance});
+    if (byGuid_.emplace(d.guid(), std::pair{group, instance}).second) {
+        // The definition list of Set to Next 38, in first-appearance order.
+        // Fields 75 and 76 (offsets 0xD6 and 0xD8) are the selector category
+        // and subcategory the Apartment Life content uses.
+        definitionList_.push_back({d.guid(), int16_t(d.field(0xD6)), int16_t(d.field(0xD8))});
+    }
     byFileName_.emplace(d.fileName, std::pair{group, instance});
     // OBJD field i is at file offset 0x40 + 2i: 9 "type" (0x52), 26 "Ignore
     // GlobalSim field in CAS Lot" (0x74), 42 "is global sim object" (0x94).
@@ -211,6 +275,11 @@ void CodeLibrary::scanDefinitions() {
             continue;
         indexDefinition(tgi.group, uint16_t(tgi.instance), ObjectDefinition::parse(index_->read(loc)));
     }
+}
+
+const std::vector<CodeLibrary::DefinitionRef>& CodeLibrary::definitions() {
+    scanDefinitions();
+    return definitionList_;
 }
 
 std::vector<uint16_t> CodeLibrary::parts(uint32_t group, uint16_t masterId) {
@@ -246,8 +315,22 @@ std::vector<uint16_t> CodeLibrary::addPackage(DbpfPackage& pkg, uint32_t group) 
         case kTypeGlob: semi = semiGlobalGroup(SemiGlobal::parse(pkg.read(e)).semiGlobalName); break;
         case kTypeObjd: {
             auto d = ObjectDefinition::parse(pkg.read(e));
-            byGuid_[d.guid()] = {group, instance};
+            const uint32_t guid = d.guid();
+            // The package's definition takes over the GUID; the list keeps the
+            // first-appearance place (the scan's) and takes the new fields.
+            byGuid_[guid] = {group, instance};
             byFileName_[d.fileName] = {group, instance};
+            bool listed = false;
+            for (auto& r : definitionList_) {
+                if (r.guid != guid)
+                    continue;
+                r.category = int16_t(d.field(0xD6));
+                r.subcategory = int16_t(d.field(0xD8));
+                listed = true;
+                break;
+            }
+            if (!listed)
+                definitionList_.push_back({guid, int16_t(d.field(0xD6)), int16_t(d.field(0xD8))});
             add(group, instance, std::move(d));
             added.push_back(instance);
             break;
@@ -680,6 +763,8 @@ void Context::set(uint8_t owner, int16_t data, int16_t value) const {
         *v = value;
         if ((owner == 0x03 || owner == 0x04) && data == objdata::ContainerId) // my / the stack object's container
             vm.noteContainer(owner == 0x03 ? me() : stackObject());
+        if ((owner == 0x03 || owner == 0x04) && data == objdata::Room) // my / the stack object's room
+            vm.noteRoomChanged(owner == 0x03 ? me().id : stackObject().id);
         return;
     }
     switch (owner) {
@@ -745,6 +830,7 @@ Object& VM::createObject(uint32_t group, size_t attributeCount, ObjectId id) {
     o.data[objdata::ObjectId] = id;
     o.data[objdata::LeadTileObjectId] = id;
     o.data[objdata::SlotNumber] = -1;
+    noteRoomChanged(id); // a new object is told its room (the pass that used to scan for it)
     o.data[objdata::SemiAttributeCount] = int16_t(o.semiAttributes.size());
     // Object data 45-47, 24 and 21 "birth year/month/day/hour/minute": when
     // the object came to be (a saved object's own come back with its state).
@@ -1025,6 +1111,15 @@ int16_t timeOfDay(int hour) {
 }
 
 void VM::tick() {
+    // A nested tick (there is none today: the app's loop, the autonomy loop
+    // and startLotObjects are the only callers) must not drop the dead
+    // threads: the iterators of the outer tick would dangle.
+    const bool outer = !ticking;
+    ticking = true;
+    struct Guard {
+        bool& flag;
+        ~Guard() { flag = false; }
+    } guard{ticking};
     // The calendar is 30-day months, as FreeSO's clock (not confirmed).
     if (++clock.tick >= clock.ticksPerMinute) {
         clock.tick = 0;
@@ -1059,15 +1154,17 @@ void VM::tick() {
     tickWants(*this);   // wants.cpp
     handleTimers();
     tickHurry(*this); // animation.hpp: object data 85 hurries the requests (OnPreSimulatorTick)
-    // Objects created or removed during the tick: the IDs are read first;
-    // new objects get their turn from the next tick on.
-    std::vector<ObjectId> ids;
-    for (const auto& [id, _] : threads)
-        ids.push_back(id);
-    for (ObjectId id : ids) {
-        auto it = threads.find(id);
-        if (it == threads.end())
-            continue;
+    // Objects created or removed during the tick: the threads are read first
+    // (the map's nodes are stable, so the iterators stay valid while the
+    // tick runs); new objects get their turn from the next tick on, and the
+    // threads of the removed ones go at the end of it (deadThreads), so that
+    // walking the map does not look every thread up again.
+    std::vector<std::map<ObjectId, Thread>::iterator> its;
+    its.reserve(threads.size());
+    for (auto it = threads.begin(); it != threads.end(); ++it)
+        its.push_back(it);
+    for (auto it : its) {
+        const ObjectId id = it->first;
         Thread& t = it->second;
         if (t.status == Thread::Status::Finished) {
             const Object* o = object(id);
@@ -1082,6 +1179,16 @@ void VM::tick() {
             run(t, instructionsPerTurn);
         if (t.status == Thread::Status::Failed && resetOnError)
             resetAfterError(id, t);
+    }
+    // The threads of the objects removed during the tick go now (the ID and
+    // the serial: the ID may belong to a new object by now). Only the
+    // outermost tick drops them: a nested one would leave the iterators of
+    // the outer tick dangling.
+    if (outer) {
+        for (const auto& [id, serial] : deadThreads)
+            if (auto it = threads.find(id); it != threads.end() && it->second.serial == serial)
+                threads.erase(it);
+        deadThreads.clear();
     }
     tickOverlayEvents(*this); // animation.hpp
     flushKillQueue(*this); // kill.hpp
@@ -1133,8 +1240,9 @@ void VM::tick() {
 //   2, object version 58 and look at score 78 := the definition's (labels
 //   49, 13), and with "use default placement flags" (label 12) the height,
 //   wall adjacency, wall placement and placement flags (4, 5, 13, 42) := the
-//   definition's defaults (labels 6, 3, 5, 4); the niceness score 7 (a
-//   virtual not followed) stays. The attributes stay. Its Init runs (not
+//   definition's defaults (labels 6, 3, 5, 4); the niceness score 7 := OBJD
+//   field 45 (the GetDefaultNicenessMultiplier virtual, vtable 0x578).
+//   The attributes stay. Its Init runs (not
 //   for a multi-tile part: its group's lead handles it), then the Main
 //   starts over.
 // The game also writes an ObjectError log. The Main starts from its first
@@ -1287,8 +1395,9 @@ void VM::followContainers() {
                 break;
             top = up;
         }
-        o.position = top->position;
+        setPosition(o, top->position);
         o.data[objdata::Room] = top->data[objdata::Room];
+        noteRoomChanged(o.id);
     }
 }
 
